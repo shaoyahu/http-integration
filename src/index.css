@@ -25,3 +25,20 @@ body {
 .ant-layout-content {
   padding: 24px;
 }
+
+.request-sidebar .ant-layout-sider-children {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.request-list {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.request-list::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}

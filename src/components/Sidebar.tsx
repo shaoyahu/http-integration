@@ -1,6 +1,14 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Layout, Popconfirm, message, Input, Tag, Select, Button } from 'antd';
-import { PlusOutlined, DeleteOutlined, EditOutlined, HolderOutlined, ArrowLeftOutlined } from '@ant-design/icons';
+import {
+  PlusOutlined,
+  DeleteOutlined,
+  EditOutlined,
+  HolderOutlined,
+  ArrowLeftOutlined,
+  VerticalAlignTopOutlined,
+  VerticalAlignBottomOutlined,
+} from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { useRequestStore } from '../store/requestStore';
 import {
@@ -134,6 +142,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ children }) => {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
   const [filterMethod, setFilterMethod] = useState<string>('all');
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const [showTopHint, setShowTopHint] = useState(false);
+  const [showBottomHint, setShowBottomHint] = useState(false);
 
   const sensors = useSensors(
     useSensor(PointerSensor),
@@ -142,9 +153,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ children }) => {
     })
   );
 
-  const filteredRequests = filterMethod === 'all'
-    ? requests
-    : requests.filter((req) => req.method === filterMethod);
+  const filteredRequests = useMemo(
+    () => (filterMethod === 'all' ? requests : requests.filter((req) => req.method === filterMethod)),
+    [filterMethod, requests]
+  );
 
   const handleRename = (id: string, newName: string) => {
     if (newName.trim()) {
@@ -173,8 +185,36 @@ export const Sidebar: React.FC<SidebarProps> = ({ children }) => {
     }
   };
 
+  const updateScrollHints = () => {
+    const el = listRef.current;
+    if (!el) return;
+    const maxScrollTop = el.scrollHeight - el.clientHeight;
+    const current = Math.ceil(el.scrollTop);
+    setShowTopHint(current > 0);
+    setShowBottomHint(maxScrollTop > 0 && current < maxScrollTop);
+  };
+
+  const scrollToTop = () => {
+    listRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const scrollToBottom = () => {
+    const el = listRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+  };
+
+  useEffect(() => {
+    updateScrollHints();
+  }, [filteredRequests.length]);
+
   return (
-    <Sider width={250} theme="light" className="border-r border-gray-200 flex flex-col" style={{ height: '100vh' }}>
+    <Sider
+      width={250}
+      theme="light"
+      className="border-r border-gray-200 flex flex-col overflow-hidden request-sidebar"
+      style={{ height: '100vh' }}
+    >
       <div className="h-12 flex items-center justify-between px-4 border-b border-gray-200 flex-shrink-0">
         <Button
           type="text"
@@ -209,37 +249,65 @@ export const Sidebar: React.FC<SidebarProps> = ({ children }) => {
             <span>添加请求</span>
           </div>
         </div>
-        <div className="overflow-y-auto flex-1 min-h-0 custom-scrollbar">
-          <DndContext
-            sensors={sensors}
-            collisionDetection={closestCenter}
-            onDragEnd={handleDragEnd}
+        <div className="relative flex flex-col flex-1 min-h-0">
+          {showTopHint && (
+            <div className="absolute top-0 left-0 right-0 z-10 flex justify-center">
+              <button
+                type="button"
+                onClick={scrollToTop}
+                className="mt-3 flex items-center gap-1 rounded-full bg-white/90 px-2.5 py-1 text-xs text-gray-500 shadow hover:text-gray-700"
+              >
+                <VerticalAlignTopOutlined className="text-base" />
+              </button>
+            </div>
+          )}
+          {showBottomHint && (
+            <div className="absolute bottom-0 left-0 right-0 z-10 flex justify-center">
+              <button
+                type="button"
+                onClick={scrollToBottom}
+                className="mb-3 flex items-center gap-1 rounded-full bg-white/90 px-2.5 py-1 text-xs text-gray-500 shadow hover:text-gray-700"
+              >
+                <VerticalAlignBottomOutlined className="text-base" />
+              </button>
+            </div>
+          )}
+          <div
+            ref={listRef}
+            onScroll={updateScrollHints}
+            className="request-list overflow-y-auto flex-1 min-h-0 custom-scrollbar"
           >
-            <SortableContext
-              items={filteredRequests.map((req) => req.id)}
-              strategy={verticalListSortingStrategy}
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              onDragEnd={handleDragEnd}
             >
-              {filteredRequests.map((req) => (
-                <SortableItem
-                  key={req.id}
-                  id={req.id}
-                  req={req}
-                  selectedRequestId={selectedRequestId}
-                  editingId={editingId}
-                  editingName={editingName}
-                  onRename={handleRename}
-                  onEdit={startEditing}
-                  onDelete={(id) => {
-                    deleteRequest(id);
-                    message.success('请求已删除');
-                  }}
-                  onSelect={setSelectedRequest}
-                  setEditingId={setEditingId}
-                  setEditingName={setEditingName}
-                />
-              ))}
-            </SortableContext>
-          </DndContext>
+              <SortableContext
+                items={filteredRequests.map((req) => req.id)}
+                strategy={verticalListSortingStrategy}
+              >
+                {filteredRequests.map((req) => (
+                  <SortableItem
+                    key={req.id}
+                    id={req.id}
+                    req={req}
+                    selectedRequestId={selectedRequestId}
+                    editingId={editingId}
+                    editingName={editingName}
+                    onRename={handleRename}
+                    onEdit={startEditing}
+                    onDelete={(id) => {
+                      deleteRequest(id);
+                      message.success('请求已删除');
+                    }}
+                    onSelect={setSelectedRequest}
+                    setEditingId={setEditingId}
+                    setEditingName={setEditingName}
+                  />
+                ))}
+              </SortableContext>
+            </DndContext>
+          </div>
         </div>
       </div>
     </Sider>
