@@ -302,15 +302,17 @@ export const RequestEditor: React.FC = () => {
     {
       key: '1',
       label: 'Headers',
+      className: '[&_.ant-tabs-tab]:bg-blue-50/50 [&_.ant-tabs-tab-active]:bg-blue-100 [&_.ant-tabs-tab-active]:border-b-[#1890ff] [&_.ant-tabs-tab]:border-b-transparent',
       children: (
         <div className="space-y-2">
           {selectedRequest.headers.map((header, index) => (
-            <Row key={index} gutter={8} align="middle">
+            <Row key={index} gutter={8} align="middle" className="p-2 hover:bg-blue-50 rounded transition-colors">
               <Col flex={2}>
                 <Input
                   placeholder="Header Key"
                   value={header.key}
                   onChange={(e) => handleHeaderChange(index, 'key', e.target.value)}
+                  className="border-blue-200 focus:border-blue-400"
                 />
               </Col>
               <Col flex={3}>
@@ -318,6 +320,7 @@ export const RequestEditor: React.FC = () => {
                   placeholder="Header Value"
                   value={header.value}
                   onChange={(e) => handleHeaderChange(index, 'value', e.target.value)}
+                  className="border-blue-200 focus:border-blue-400"
                 />
               </Col>
               <Col flex={1}>
@@ -326,11 +329,12 @@ export const RequestEditor: React.FC = () => {
                   danger
                   icon={<DeleteOutlined />}
                   onClick={() => handleRemoveHeader(index)}
+                  className="hover:bg-red-50"
                 />
               </Col>
             </Row>
           ))}
-          <Button type="dashed" onClick={handleAddHeader} icon={<PlusOutlined />} block>
+          <Button type="dashed" onClick={handleAddHeader} icon={<PlusOutlined />} block className="border-blue-300 text-blue-600 hover:border-blue-400 hover:text-blue-700 hover:bg-blue-50">
             添加 Header
           </Button>
         </div>
@@ -339,15 +343,17 @@ export const RequestEditor: React.FC = () => {
     {
       key: '2',
       label: 'Params',
+      className: '[&_.ant-tabs-tab]:bg-green-50/50 [&_.ant-tabs-tab-active]:bg-green-100 [&_.ant-tabs-tab-active]:border-b-[#52c41a] [&_.ant-tabs-tab]:border-b-transparent',
       children: (
         <div className="space-y-2">
           {selectedRequest.params.map((param, index) => (
-            <Row key={index} gutter={8} align="middle">
+            <Row key={index} gutter={8} align="middle" className="p-2 hover:bg-green-50 rounded transition-colors">
               <Col flex={2}>
                 <Input
                   placeholder="Param Key"
                   value={param.key}
                   onChange={(e) => handleParamChange(index, 'key', e.target.value)}
+                  className="border-green-200 focus:border-green-400"
                 />
               </Col>
               <Col flex={3}>
@@ -355,6 +361,7 @@ export const RequestEditor: React.FC = () => {
                   placeholder="Param Value"
                   value={param.value}
                   onChange={(e) => handleParamChange(index, 'value', e.target.value)}
+                  className="border-green-200 focus:border-green-400"
                 />
               </Col>
               <Col flex={1}>
@@ -363,11 +370,12 @@ export const RequestEditor: React.FC = () => {
                   danger
                   icon={<DeleteOutlined />}
                   onClick={() => handleRemoveParam(index)}
+                  className="hover:bg-red-50"
                 />
               </Col>
             </Row>
           ))}
-          <Button type="dashed" onClick={handleAddParam} icon={<PlusOutlined />} block>
+          <Button type="dashed" onClick={handleAddParam} icon={<PlusOutlined />} block className="border-green-300 text-green-600 hover:border-green-400 hover:text-green-700 hover:bg-green-50">
             添加 Param
           </Button>
         </div>
@@ -378,6 +386,7 @@ export const RequestEditor: React.FC = () => {
   const bodyTab = {
     key: '3',
     label: 'Body',
+    className: '[&_.ant-tabs-tab]:bg-gray-50/50 [&_.ant-tabs-tab-active]:bg-gray-100 [&_.ant-tabs-tab-active]:border-b-[#8c8c8c] [&_.ant-tabs-tab]:border-b-transparent',
     children: (
       <div className="h-full">
         <div className="mb-2 font-medium text-gray-700">请求 Body (JSON)</div>
@@ -409,21 +418,24 @@ export const RequestEditor: React.FC = () => {
   const inputFieldsTab = {
     key: '4',
     label: '入参字段',
+    className: '[&_.ant-tabs-tab]:bg-orange-50/50 [&_.ant-tabs-tab-active]:bg-orange-100 [&_.ant-tabs-tab-active]:border-b-[#fa8c16] [&_.ant-tabs-tab]:border-b-transparent',
     children: (
       <div className="space-y-2">
         {selectedRequest.inputFields.map((field, index) => (
-          <Row key={index} gutter={8} align="middle">
+          <Row key={index} gutter={8} align="middle" className="p-2 hover:bg-orange-50 rounded transition-colors">
             <Col flex={2}>
               <Input
                 placeholder="字段名称"
                 value={field.name}
                 onChange={(e) => handleInputChange(index, 'name', e.target.value)}
+                className="border-orange-200 focus:border-orange-400"
               />
             </Col>
             <Col flex={2}>
               <Select
                 value={field.type}
                 onChange={(value) => handleInputChange(index, 'type', value)}
+                className="border-orange-200"
               >
                 <Option value="params">Query参数</Option>
                 <Option value="path">路径参数</Option>
@@ -434,6 +446,7 @@ export const RequestEditor: React.FC = () => {
               <Select
                 value={field.required ? '必填' : '可选'}
                 onChange={(value) => handleInputChange(index, 'required', value === '必填')}
+                className="border-orange-200"
               >
                 <Option value="必填">必填</Option>
                 <Option value="可选">可选</Option>
@@ -444,6 +457,7 @@ export const RequestEditor: React.FC = () => {
                 placeholder="描述"
                 value={field.description}
                 onChange={(e) => handleInputChange(index, 'description', e.target.value)}
+                className="border-orange-200 focus:border-orange-400"
               />
             </Col>
             <Col flex={1}>
@@ -452,11 +466,12 @@ export const RequestEditor: React.FC = () => {
                 danger
                 icon={<DeleteOutlined />}
                 onClick={() => handleRemoveInputField(index)}
+                className="hover:bg-red-50"
               />
             </Col>
           </Row>
         ))}
-        <Button type="dashed" onClick={handleAddInputField} icon={<PlusOutlined />} block>
+        <Button type="dashed" onClick={handleAddInputField} icon={<PlusOutlined />} block className="border-orange-300 text-orange-600 hover:border-orange-400 hover:text-orange-700 hover:bg-orange-50">
           添加入参字段
         </Button>
       </div>
@@ -466,18 +481,20 @@ export const RequestEditor: React.FC = () => {
   const outputFieldsTab = {
     key: '5',
     label: '出参字段',
+    className: '[&_.ant-tabs-tab]:bg-purple-50/50 [&_.ant-tabs-tab-active]:bg-purple-100 [&_.ant-tabs-tab-active]:border-b-[#722ed1] [&_.ant-tabs-tab]:border-b-transparent',
     children: (
       <div className="space-y-2">
-        <div className="text-sm text-gray-500 mb-2">
+        <div className="text-sm text-gray-500 mb-2 p-3 bg-purple-50 rounded">
           点击发送请求后，可以从响应数据中定义出参字段，供工作流中的后续请求使用
         </div>
         {selectedRequest.outputFields.map((field, index) => (
-          <Row key={index} gutter={8} align="middle">
+          <Row key={index} gutter={8} align="middle" className="p-2 hover:bg-purple-50 rounded transition-colors">
             <Col flex={2}>
               <Input
                 placeholder="字段名称"
                 value={field.name}
                 onChange={(e) => handleOutputChange(index, 'name', e.target.value)}
+                className="border-purple-200 focus:border-purple-400"
               />
             </Col>
             <Col flex={3}>
@@ -485,6 +502,7 @@ export const RequestEditor: React.FC = () => {
                 placeholder="JSON路径 (例: data.userId)"
                 value={field.path}
                 onChange={(e) => handleOutputChange(index, 'path', e.target.value)}
+                className="border-purple-200 focus:border-purple-400"
               />
             </Col>
             <Col flex={3}>
@@ -492,6 +510,7 @@ export const RequestEditor: React.FC = () => {
                 placeholder="描述"
                 value={field.description}
                 onChange={(e) => handleOutputChange(index, 'description', e.target.value)}
+                className="border-purple-200 focus:border-purple-400"
               />
             </Col>
             <Col flex={1}>
@@ -500,11 +519,12 @@ export const RequestEditor: React.FC = () => {
                 danger
                 icon={<DeleteOutlined />}
                 onClick={() => handleRemoveOutputField(index)}
+                className="hover:bg-red-50"
               />
             </Col>
           </Row>
         ))}
-        <Button type="dashed" onClick={handleAddOutputField} icon={<PlusOutlined />} block>
+        <Button type="dashed" onClick={handleAddOutputField} icon={<PlusOutlined />} block className="border-purple-300 text-purple-600 hover:border-purple-400 hover:text-purple-700 hover:bg-purple-50">
           添加出参字段
         </Button>
       </div>
