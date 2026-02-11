@@ -9,6 +9,7 @@ export interface ParamField {
   name: string
   type: 'params' | 'path' | 'body'
   required: boolean
+  value?: string
   description?: string
 }
 
@@ -16,6 +17,12 @@ export interface OutputField {
   name: string
   path: string
   description?: string
+}
+
+export interface ApiMapping {
+  inputName: string
+  target: 'path' | 'params' | 'body'
+  key: string
 }
 
 export interface HttpRequest {
@@ -28,6 +35,7 @@ export interface HttpRequest {
   body: string
   inputFields: ParamField[]
   outputFields: OutputField[]
+  apiMappings: ApiMapping[]
 }
 
 interface RequestStore {
@@ -42,23 +50,27 @@ interface RequestStore {
 
 export const useRequestStore = create<RequestStore>((set) => ({
   requests: [],
-  addRequest: () => set((state) => ({
-    requests: [
-      ...state.requests,
-      {
-        id: Date.now().toString(),
-        name: `请求 ${state.requests.length + 1}`,
-        method: 'GET',
-        url: '',
-        headers: [{ key: '', value: '' }],
-        params: [{ key: '', value: '' }],
+  addRequest: () => set((state) => {
+    const id = Date.now().toString();
+    return {
+      requests: [
+        ...state.requests,
+        {
+          id,
+          name: `请求 ${state.requests.length + 1}`,
+          method: 'GET',
+          url: '',
+          headers: [],
+          params: [],
         body: JSON.stringify({}, null, 2),
         inputFields: [],
         outputFields: [],
+        apiMappings: [],
       },
-    ],
-    selectedRequestId: Date.now().toString(),
-  })),
+      ],
+      selectedRequestId: id,
+    };
+  }),
   updateRequest: (id, updates) =>
     set((state) => ({
       requests: state.requests.map((req) =>

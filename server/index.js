@@ -64,8 +64,23 @@ app.all('/api/proxy', async (req, res) => {
     }
 
     const proxyReq = lib.request(targetUrl, options, (proxyRes) => {
-      res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
-      proxyRes.pipe(res);
+      const chunks = [];
+      proxyRes.on('data', (chunk) => chunks.push(chunk));
+      proxyRes.on('end', () => {
+        const buffer = Buffer.concat(chunks);
+        const rawText = buffer.toString('utf8');
+        let data = rawText;
+        try {
+          data = JSON.parse(rawText);
+        } catch (e) {
+          // keep raw text
+        }
+        res.status(proxyRes.statusCode || 200).json({
+          status: proxyRes.statusCode || 200,
+          headers: proxyRes.headers || {},
+          data,
+        });
+      });
     }).on('error', (err) => {
       console.error('Proxy Error:', err);
       res.status(500).json({ error: 'Proxy request failed', details: err.message });

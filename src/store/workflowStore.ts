@@ -22,6 +22,9 @@ export interface Workflow {
   id: string
   name: string
   requests: WorkflowRequest[]
+  createdAt: number
+  updatedAt: number
+  nodePositions?: Record<string, { x: number; y: number }>
 }
 
 export interface WorkflowRequest {
@@ -35,6 +38,7 @@ export interface WorkflowRequest {
   inputFields: ParamField[]
   outputFields: OutputField[]
   inputValues: Record<string, string>
+  apiMappings?: Array<{ inputName: string; target: 'path' | 'params' | 'body'; key: string }>
 }
 
 interface WorkflowStore {
@@ -60,6 +64,9 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
         id: Date.now().toString(),
         name: `工作流 ${state.workflows.length + 1}`,
         requests: [],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        nodePositions: {},
       },
     ],
     selectedWorkflowId: Date.now().toString(),
@@ -67,7 +74,7 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
   updateWorkflow: (id, updates) =>
     set((state) => ({
       workflows: state.workflows.map((wf) =>
-        wf.id === id ? { ...wf, ...updates } : wf
+        wf.id === id ? { ...wf, ...updates, updatedAt: updates.updatedAt || Date.now() } : wf
       ),
     })),
   deleteWorkflow: (id) =>
@@ -81,14 +88,16 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
         wf.id === workflowId
           ? {
               ...wf,
+              updatedAt: Date.now(),
               requests: [
                 ...wf.requests,
                 {
                   ...request,
-                  id: Date.now().toString(),
+                  id: request.id || Date.now().toString(),
                   inputValues: {},
                   inputFields: request.inputFields || [],
                   outputFields: request.outputFields || [],
+                  apiMappings: request.apiMappings || [],
                 },
               ],
             }
@@ -99,7 +108,12 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
     set((state) => ({
       workflows: state.workflows.map((wf) =>
         wf.id === workflowId
-          ? { ...wf, requests: wf.requests.filter((req) => req.id !== requestId) }
+          ? {
+              ...wf,
+              updatedAt: Date.now(),
+              requests: wf.requests.filter((req) => req.id !== requestId),
+              nodePositions: Object.fromEntries(Object.entries(wf.nodePositions || {}).filter(([key]) => key !== requestId)),
+            }
           : wf
       ),
     })),
@@ -109,6 +123,7 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
         wf.id === workflowId
           ? {
               ...wf,
+              updatedAt: Date.now(),
               requests: wf.requests.map((req) =>
                 req.id === requestId ? { ...req, ...updates } : req
               ),
@@ -126,7 +141,7 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
       );
 
       return {
-        workflows: state.workflows.map((wf) => (wf.id === workflowId ? { ...wf, requests: newRequests } : wf)),
+        workflows: state.workflows.map((wf) => (wf.id === workflowId ? { ...wf, updatedAt: Date.now(), requests: newRequests } : wf)),
       };
     }),
   addOutputFieldsFromResponse: (workflowId, requestId, response) =>
@@ -167,7 +182,7 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
       );
 
       return {
-        workflows: state.workflows.map((wf) => (wf.id === workflowId ? { ...wf, requests: newRequests } : wf)),
+        workflows: state.workflows.map((wf) => (wf.id === workflowId ? { ...wf, updatedAt: Date.now(), requests: newRequests } : wf)),
       };
     }),
   reorderWorkflowRequests: (workflowId, oldIndex, newIndex) =>
@@ -181,7 +196,7 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
 
       return {
         workflows: state.workflows.map((wf) =>
-          wf.id === workflowId ? { ...wf, requests: newRequests } : wf
+          wf.id === workflowId ? { ...wf, updatedAt: Date.now(), requests: newRequests } : wf
         ),
       };
     }),

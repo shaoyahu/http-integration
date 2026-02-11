@@ -1,9 +1,10 @@
 import React, { useEffect } from 'react';
-import { Form, Input, Select, Button, Tabs, Card, Space, Row, Col, message, Popconfirm, Tooltip } from 'antd';
-import { PlusOutlined, DeleteOutlined, SendOutlined, ImportOutlined } from '@ant-design/icons';
+import { Form, Input, Select, Button, Tabs, Card, Space, Row, Col, message, Drawer } from 'antd';
+import { PlusOutlined, DeleteOutlined } from '@ant-design/icons';
 import { useRequestStore } from '../store/requestStore';
-import { proxyRequest, healthCheck } from '../api/http';
+import { proxyRequest } from '../api/http';
 import Editor from '@monaco-editor/react';
+import { applyPathMapping, parseBodyValue, setNestedValue } from '../utils/requestPayload';
 
 const { Option } = Select;
 
@@ -35,13 +36,34 @@ const formatResponseData = (data: any): string => {
   return String(data);
 };
 
+const parseResponseData = (data: any): any | null => {
+  if (data === null || data === undefined) return null;
+  if (typeof data === 'object') return data;
+  if (typeof data === 'string') {
+    try {
+      const parsed = JSON.parse(data);
+      if (typeof parsed === 'object' && parsed !== null) {
+        return parsed;
+      }
+    } catch (e) {
+      return null;
+    }
+  }
+  return null;
+};
+
+const hasPathPlaceholder = (url: string, key: string) => url.includes(`{${key}}`) || url.includes(`:${key}`);
+
 export const RequestEditor: React.FC = () => {
-  const { requests, selectedRequestId, updateRequest, deleteRequest, setSelectedRequest } = useRequestStore();
-  const [form] = Form.useForm();
-  const [loading, setLoading] = React.useState(false);
+  const { requests, selectedRequestId, updateRequest } = useRequestStore();
+  const [testForm] = Form.useForm();
+  const [testLoading, setTestLoading] = React.useState(false);
   const [requestName, setRequestName] = React.useState('');
   const [response, setResponse] = React.useState<any>(null);
   const [previousRequestId, setPreviousRequestId] = React.useState<string | null>(null);
+  const [drawerOpen, setDrawerOpen] = React.useState(false);
+  const [activeTestTab, setActiveTestTab] = React.useState<'inputs' | 'results'>('inputs');
+  const [curlPreview, setCurlPreview] = React.useState('');
 
   const selectedRequest = requests.find((req) => req.id === selectedRequestId);
 
@@ -49,38 +71,29 @@ export const RequestEditor: React.FC = () => {
     // 只有当实际切换请求时才清除响应结果
     if (selectedRequestId !== previousRequestId) {
       if (selectedRequest) {
-        form.setFieldsValue(selectedRequest);
         setRequestName(selectedRequest.name);
         // 清除响应结果
         setResponse(null);
       } else {
-        form.resetFields();
         setRequestName('');
         // 清除响应结果
         setResponse(null);
       }
       setPreviousRequestId(selectedRequestId);
     }
-  }, [selectedRequest, selectedRequestId, form, previousRequestId]);
+  }, [selectedRequest, selectedRequestId, previousRequestId]);
 
-  const handleDeleteRequest = () => {
-    if (!selectedRequestId) return;
-
-    const currentIndex = requests.findIndex((req) => req.id === selectedRequestId);
-    deleteRequest(selectedRequestId);
-    message.success('请求已删除');
-
-    const newRequests = requests.filter((req) => req.id !== selectedRequestId);
-    if (newRequests.length > 0) {
-      if (currentIndex >= newRequests.length) {
-        setSelectedRequest(newRequests[newRequests.length - 1].id);
-      } else {
-        setSelectedRequest(newRequests[currentIndex]?.id || newRequests[0].id);
-      }
-    } else {
-      setSelectedRequest(null);
+  useEffect(() => {
+    if (drawerOpen && selectedRequest) {
+      const initialValues = selectedRequest.inputFields.reduce((acc, field, index) => {
+        const key = field.name || `field_${index + 1}`;
+        acc[key] = field.value ?? '';
+        return acc;
+      }, {} as Record<string, string>);
+      testForm.setFieldsValue(initialValues);
+      setActiveTestTab('inputs');
     }
-  };
+  }, [drawerOpen, selectedRequest, testForm]);
 
   const handleRenameRequest = () => {
     if (!selectedRequestId || !requestName.trim()) {
@@ -91,43 +104,155 @@ export const RequestEditor: React.FC = () => {
     message.success('请求已重命名');
   };
 
-  const handleSend = async () => {
+  const handleImportOutputFields = () => {
+    if (!response || !selectedRequest) return;
+    const parsed = parseResponseData(response.data);
+    if (!parsed) {
+      message.warning('响应结果不是有效的 JSON 对象');
+      return;
+    }
+
+    const outputFields: Array<{ name: string; path: string; description: string }> = [];
+    const visitedPaths = new Set<string>();
+
+    const traverse = (obj: any, path: string = '') => {
+      if (typeof obj !== 'object' || obj === null) return;
+
+      for (const [key, value] of Object.entries(obj)) {
+        const currentPath = path ? `${path}.${key}` : key;
+        if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+          traverse(value, currentPath);
+        } else {
+          if (!visitedPaths.has(currentPath)) {
+            outputFields.push({
+              name: key,
+              path: currentPath,
+              description: `从响应中提取的参数: ${currentPath}`,
+            });
+            visitedPaths.add(currentPath);
+          }
+        }
+      }
+    };
+
+    traverse(parsed);
+
+    if (outputFields.length === 0) {
+      message.warning('响应中没有可提取的出参字段');
+      return;
+    }
+
+    updateRequest(selectedRequest.id, {
+      outputFields: [...selectedRequest.outputFields, ...outputFields],
+    });
+    message.success(`已导入 ${outputFields.length} 个出参字段`);
+  };
+
+  const buildRequestPayload = (inputValueMap: Record<string, string>) => {
+    const headers: Record<string, string> = {};
+    const params: Record<string, string> = {};
+    const bodyObject: Record<string, any> = {};
+    let url = selectedRequest?.url || '';
+
+    const mappings = selectedRequest?.apiMappings || [];
+    for (const mapping of mappings) {
+      if (!mapping.inputName || !mapping.key) continue;
+      const value = inputValueMap[mapping.inputName];
+      if (value === undefined) continue;
+      if (mapping.target === 'path') {
+        url = applyPathMapping(url, mapping.key, value);
+      } else if (mapping.target === 'params') {
+        params[mapping.key] = value;
+      } else if (mapping.target === 'body') {
+        setNestedValue(bodyObject, mapping.key, parseBodyValue(value));
+      }
+    }
+
+    let body = undefined;
+    if (selectedRequest && ['POST', 'PUT', 'PATCH'].includes(selectedRequest.method) && Object.keys(bodyObject).length > 0) {
+      body = bodyObject;
+    }
+
+    return { url, headers, params, body };
+  };
+
+  const buildCurl = (url: string, method: string, params: Record<string, string>, body?: any) => {
+    let fullUrl = url;
+    const entries = Object.entries(params);
+    if (entries.length > 0) {
+      const query = entries
+        .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
+        .join('&');
+      fullUrl += fullUrl.includes('?') ? `&${query}` : `?${query}`;
+    }
+    const parts = [`curl -X ${method}`];
+    if (body !== undefined) {
+      parts.push(`-H "Content-Type: application/json"`);
+      parts.push(`-d '${JSON.stringify(body)}'`);
+    }
+    parts.push(`"${fullUrl}"`);
+    return parts.join(' ');
+  };
+
+  const handleDebugRun = async () => {
     if (!selectedRequest || !selectedRequest.url) {
       message.error('请输入URL');
       return;
     }
-
-    setLoading(true);
     try {
-      const headers = selectedRequest.headers.reduce(
-        (acc, h) => (h.key ? { ...acc, [h.key]: h.value } : acc),
-        {} as Record<string, string>
+      const incompleteMappings = (selectedRequest.apiMappings || []).filter(
+        (mapping) => !mapping.inputName || !mapping.key
       );
-
-      const params = selectedRequest.params.reduce(
-        (acc, p) => (p.key ? { ...acc, [p.key]: p.value } : acc),
-        {} as Record<string, string>
-      );
-
-      let body = undefined;
-      if (['POST', 'PUT', 'PATCH'].includes(selectedRequest.method) && selectedRequest.body) {
-        try {
-          body = JSON.parse(selectedRequest.body);
-        } catch (e) {
-          body = selectedRequest.body;
-        }
+      if (incompleteMappings.length > 0) {
+        message.warning('API 配置中存在未完整填写的映射');
+        return;
       }
 
+      const values = await testForm.validateFields();
+      const inputValueMap = selectedRequest.inputFields.reduce((acc, field, index) => {
+        if (field.name) {
+          acc[field.name] = values[field.name];
+        } else {
+          acc[`field_${index + 1}`] = values[`field_${index + 1}`];
+        }
+        return acc;
+      }, {} as Record<string, string>);
+
+      const missingRequired = selectedRequest.inputFields.filter(
+        (field) => field.required && field.name && !inputValueMap[field.name]
+      );
+      if (missingRequired.length > 0) {
+        message.error(`请填写必填入参: ${missingRequired.map((f) => f.name || '未命名').join(', ')}`);
+        return;
+      }
+
+      const pathMissing = (selectedRequest.apiMappings || [])
+        .filter((mapping) => mapping.target === 'path' && mapping.key && !hasPathPlaceholder(selectedRequest.url, mapping.key))
+        .map((mapping) => mapping.key);
+      if (pathMissing.length > 0) {
+        message.warning(`URL 缺少路径占位符: ${pathMissing.join(', ')}`);
+        return;
+      }
+
+      const mappedInputs = new Set((selectedRequest.apiMappings || []).map((mapping) => mapping.inputName).filter(Boolean));
+      const unmappedInputs = selectedRequest.inputFields
+        .map((field) => field.name)
+        .filter((name) => name && !mappedInputs.has(name));
+      if (unmappedInputs.length > 0) {
+        message.warning(`以下入参未映射: ${unmappedInputs.join(', ')}`);
+      }
+
+      setTestLoading(true);
+      const { url, headers, params, body } = buildRequestPayload(inputValueMap);
+      setCurlPreview(buildCurl(url, selectedRequest.method, params, body));
       const result = await proxyRequest({
-        url: selectedRequest.url,
+        url,
         method: selectedRequest.method,
         headers,
         body,
         params,
       });
-
       const responseData = result.data !== undefined && result.data !== null ? result.data : result;
-
       setResponse({
         status: result.status || 200,
         statusText: result.statusText || 'OK',
@@ -135,74 +260,30 @@ export const RequestEditor: React.FC = () => {
         headers: result.headers || {},
         time: result.time,
       });
+      setActiveTestTab('results');
       message.success('请求成功');
     } catch (error: any) {
+      if (error?.errorFields) {
+        return;
+      }
       const errorData = error.response?.data || error.message || '请求失败';
-
       setResponse({
         status: error.response?.status || 500,
         statusText: error.response?.statusText || 'Error',
         data: errorData,
         headers: error.response?.headers || {},
       });
+      setActiveTestTab('results');
       message.error(error.response?.data?.message || error.message || '请求失败');
     } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleAddHeader = () => {
-    if (selectedRequest) {
-      updateRequest(selectedRequest.id, {
-        headers: [...selectedRequest.headers, { key: '', value: '' }],
-      });
-    }
-  };
-
-  const handleRemoveHeader = (index: number) => {
-    if (selectedRequest) {
-      const newHeaders = [...selectedRequest.headers];
-      newHeaders.splice(index, 1);
-      updateRequest(selectedRequest.id, { headers: newHeaders });
-    }
-  };
-
-  const handleHeaderChange = (index: number, field: 'key' | 'value', value: string) => {
-    if (selectedRequest) {
-      const newHeaders = [...selectedRequest.headers];
-      newHeaders[index][field] = value;
-      updateRequest(selectedRequest.id, { headers: newHeaders });
-    }
-  };
-
-  const handleAddParam = () => {
-    if (selectedRequest) {
-      updateRequest(selectedRequest.id, {
-        params: [...selectedRequest.params, { key: '', value: '' }],
-      });
-    }
-  };
-
-  const handleRemoveParam = (index: number) => {
-    if (selectedRequest) {
-      const newParams = [...selectedRequest.params];
-      newParams.splice(index, 1);
-      updateRequest(selectedRequest.id, { params: newParams });
-    }
-  };
-
-  const handleParamChange = (index: number, field: 'key' | 'value', value: string) => {
-    if (selectedRequest) {
-      const newParams = [...selectedRequest.params];
-      newParams[index][field] = value;
-      updateRequest(selectedRequest.id, { params: newParams });
+      setTestLoading(false);
     }
   };
 
   const handleAddInputField = () => {
     if (selectedRequest) {
       updateRequest(selectedRequest.id, {
-        inputFields: [...selectedRequest.inputFields, { name: '', type: 'params', required: false, description: '' }],
+        inputFields: [...selectedRequest.inputFields, { name: '', type: 'params', required: false, value: '', description: '' }],
       });
     }
   };
@@ -215,11 +296,18 @@ export const RequestEditor: React.FC = () => {
     }
   };
 
-  const handleInputChange = (index: number, field: 'name' | 'type' | 'required' | 'description', value: any) => {
+  const handleInputChange = (index: number, field: 'name' | 'type' | 'required' | 'description' | 'value', value: any) => {
     if (selectedRequest) {
       const newInputFields = [...selectedRequest.inputFields];
+      const previousName = newInputFields[index]?.name;
       newInputFields[index] = { ...newInputFields[index], [field]: value };
-      updateRequest(selectedRequest.id, { inputFields: newInputFields });
+      const updates: any = { inputFields: newInputFields };
+      if (field === 'name' && previousName && previousName !== value) {
+        updates.apiMappings = (selectedRequest.apiMappings || []).map((mapping) =>
+          mapping.inputName === previousName ? { ...mapping, inputName: value } : mapping
+        );
+      }
+      updateRequest(selectedRequest.id, updates);
     }
   };
 
@@ -247,47 +335,28 @@ export const RequestEditor: React.FC = () => {
     }
   };
 
-  const extractOutputFieldsFromResponse = () => {
-    if (!response || !response.data || !selectedRequest) {
-      message.warning('没有有效的响应数据');
-      return;
+  const handleAddMapping = () => {
+    if (selectedRequest) {
+      updateRequest(selectedRequest.id, {
+        apiMappings: [...(selectedRequest.apiMappings || []), { inputName: '', target: 'params', key: '' }],
+      });
     }
+  };
 
-    const outputFields = [];
-    const visitedPaths = new Set<string>();
-
-    const traverse = (obj: any, path: string = '') => {
-      if (typeof obj !== 'object' || obj === null) return;
-
-      for (const [key, value] of Object.entries(obj)) {
-        const currentPath = path ? `${path}.${key}` : key;
-        
-        if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-          traverse(value, currentPath);
-        } else {
-          if (!visitedPaths.has(currentPath)) {
-            outputFields.push({
-              name: key,
-              path: currentPath,
-              description: `从响应中提取的参数: ${currentPath}`,
-            });
-            visitedPaths.add(currentPath);
-          }
-        }
-      }
-    };
-
-    traverse(response.data);
-
-    if (outputFields.length === 0) {
-      message.warning('响应中没有可提取的出参字段');
-      return;
+  const handleRemoveMapping = (index: number) => {
+    if (selectedRequest) {
+      const newMappings = [...(selectedRequest.apiMappings || [])];
+      newMappings.splice(index, 1);
+      updateRequest(selectedRequest.id, { apiMappings: newMappings });
     }
+  };
 
-    updateRequest(selectedRequest.id, { 
-      outputFields: [...selectedRequest.outputFields, ...outputFields] 
-    });
-    message.success(`已导入 ${outputFields.length} 个出参字段`);
+  const handleMappingChange = (index: number, field: 'inputName' | 'target' | 'key', value: string) => {
+    if (selectedRequest) {
+      const newMappings = [...(selectedRequest.apiMappings || [])];
+      newMappings[index] = { ...newMappings[index], [field]: value };
+      updateRequest(selectedRequest.id, { apiMappings: newMappings });
+    }
   };
 
   if (!selectedRequest) {
@@ -298,125 +367,19 @@ export const RequestEditor: React.FC = () => {
     );
   }
 
-  const headerParamsItems = [
-    {
-      key: '1',
-      label: 'Headers',
-      className: '[&_.ant-tabs-tab]:bg-blue-50/50 [&_.ant-tabs-tab-active]:bg-blue-100 [&_.ant-tabs-tab-active]:border-b-[#1890ff] [&_.ant-tabs-tab]:border-b-transparent',
-      children: (
-        <div className="space-y-2">
-          {selectedRequest.headers.map((header, index) => (
-            <Row key={index} gutter={8} align="middle" className="p-2 hover:bg-blue-50 rounded transition-colors">
-              <Col flex={2}>
-                <Input
-                  placeholder="Header Key"
-                  value={header.key}
-                  onChange={(e) => handleHeaderChange(index, 'key', e.target.value)}
-                  className="border-blue-200 focus:border-blue-400"
-                />
-              </Col>
-              <Col flex={3}>
-                <Input
-                  placeholder="Header Value"
-                  value={header.value}
-                  onChange={(e) => handleHeaderChange(index, 'value', e.target.value)}
-                  className="border-blue-200 focus:border-blue-400"
-                />
-              </Col>
-              <Col flex={1}>
-                <Button
-                  type="text"
-                  danger
-                  icon={<DeleteOutlined />}
-                  onClick={() => handleRemoveHeader(index)}
-                  className="hover:bg-red-50"
-                />
-              </Col>
-            </Row>
-          ))}
-          <Button type="dashed" onClick={handleAddHeader} icon={<PlusOutlined />} block className="border-blue-300 text-blue-600 hover:border-blue-400 hover:text-blue-700 hover:bg-blue-50">
-            添加 Header
-          </Button>
-        </div>
-      ),
-    },
-    {
-      key: '2',
-      label: 'Params',
-      className: '[&_.ant-tabs-tab]:bg-green-50/50 [&_.ant-tabs-tab-active]:bg-green-100 [&_.ant-tabs-tab-active]:border-b-[#52c41a] [&_.ant-tabs-tab]:border-b-transparent',
-      children: (
-        <div className="space-y-2">
-          {selectedRequest.params.map((param, index) => (
-            <Row key={index} gutter={8} align="middle" className="p-2 hover:bg-green-50 rounded transition-colors">
-              <Col flex={2}>
-                <Input
-                  placeholder="Param Key"
-                  value={param.key}
-                  onChange={(e) => handleParamChange(index, 'key', e.target.value)}
-                  className="border-green-200 focus:border-green-400"
-                />
-              </Col>
-              <Col flex={3}>
-                <Input
-                  placeholder="Param Value"
-                  value={param.value}
-                  onChange={(e) => handleParamChange(index, 'value', e.target.value)}
-                  className="border-green-200 focus:border-green-400"
-                />
-              </Col>
-              <Col flex={1}>
-                <Button
-                  type="text"
-                  danger
-                  icon={<DeleteOutlined />}
-                  onClick={() => handleRemoveParam(index)}
-                  className="hover:bg-red-50"
-                />
-              </Col>
-            </Row>
-          ))}
-          <Button type="dashed" onClick={handleAddParam} icon={<PlusOutlined />} block className="border-green-300 text-green-600 hover:border-green-400 hover:text-green-700 hover:bg-green-50">
-            添加 Param
-          </Button>
-        </div>
-      ),
-    },
-  ];
-
-  const bodyTab = {
-    key: '3',
-    label: 'Body',
-    className: '[&_.ant-tabs-tab]:bg-gray-50/50 [&_.ant-tabs-tab-active]:bg-gray-100 [&_.ant-tabs-tab-active]:border-b-[#8c8c8c] [&_.ant-tabs-tab]:border-b-transparent',
-    children: (
-      <div className="h-full">
-        <div className="mb-2 font-medium text-gray-700">请求 Body (JSON)</div>
-        <div className="w-full border border-gray-300 rounded">
-          <Editor
-            height="calc(100vh - 380px)"
-            defaultLanguage="json"
-            value={selectedRequest.body}
-            onChange={(value) => {
-              if (value !== undefined) {
-                updateRequest(selectedRequest.id, { body: value });
-              }
-            }}
-            theme="vs-dark"
-            options={{
-              minimap: { enabled: false },
-              fontSize: 14,
-              scrollBeyondLastLine: false,
-              wordWrap: 'on',
-              formatOnPaste: true,
-              formatOnType: true,
-            }}
-          />
-        </div>
-      </div>
-    ),
-  };
+  const apiMappings = selectedRequest.apiMappings || [];
+  const parsedResponseData = response ? parseResponseData(response.data) : null;
+  const incompleteMappings = apiMappings.filter((mapping) => !mapping.inputName || !mapping.key);
+  const pathMappingsMissingPlaceholder = apiMappings
+    .filter((mapping) => mapping.target === 'path' && mapping.key && !hasPathPlaceholder(selectedRequest.url, mapping.key))
+    .map((mapping) => mapping.key);
+  const mappedInputs = new Set(apiMappings.map((mapping) => mapping.inputName).filter(Boolean));
+  const unmappedInputs = selectedRequest.inputFields
+    .map((field) => field.name)
+    .filter((name) => name && !mappedInputs.has(name));
 
   const inputFieldsTab = {
-    key: '4',
+    key: '1',
     label: '入参字段',
     className: '[&_.ant-tabs-tab]:bg-orange-50/50 [&_.ant-tabs-tab-active]:bg-orange-100 [&_.ant-tabs-tab-active]:border-b-[#fa8c16] [&_.ant-tabs-tab]:border-b-transparent',
     children: (
@@ -432,15 +395,12 @@ export const RequestEditor: React.FC = () => {
               />
             </Col>
             <Col flex={2}>
-              <Select
-                value={field.type}
-                onChange={(value) => handleInputChange(index, 'type', value)}
-                className="border-orange-200"
-              >
-                <Option value="params">Query参数</Option>
-                <Option value="path">路径参数</Option>
-                <Option value="body">Body参数</Option>
-              </Select>
+              <Input
+                placeholder="默认值/测试值"
+                value={field.value}
+                onChange={(e) => handleInputChange(index, 'value', e.target.value)}
+                className="border-orange-200 focus:border-orange-400"
+              />
             </Col>
             <Col flex={1}>
               <Select
@@ -478,8 +438,84 @@ export const RequestEditor: React.FC = () => {
     ),
   };
 
+  const apiConfigTab = {
+    key: '2',
+    label: 'API 配置',
+    className: '[&_.ant-tabs-tab]:bg-slate-50/50 [&_.ant-tabs-tab-active]:bg-slate-100 [&_.ant-tabs-tab-active]:border-b-[#64748b] [&_.ant-tabs-tab]:border-b-transparent',
+    children: (
+      <div>
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-sm font-semibold text-gray-700">API 配置</div>
+          <Button type="dashed" onClick={handleAddMapping} icon={<PlusOutlined />}>
+            添加映射
+          </Button>
+        </div>
+        {(incompleteMappings.length > 0 || pathMappingsMissingPlaceholder.length > 0 || unmappedInputs.length > 0) && (
+          <div className="mb-3 space-y-1 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
+            {incompleteMappings.length > 0 && <div>存在未完整填写的映射。</div>}
+            {pathMappingsMissingPlaceholder.length > 0 && (
+              <div>URL 缺少路径占位符: {pathMappingsMissingPlaceholder.join(', ')}</div>
+            )}
+            {unmappedInputs.length > 0 && <div>以下入参尚未映射: {unmappedInputs.join(', ')}</div>}
+          </div>
+        )}
+        {apiMappings.length === 0 ? (
+          <div className="text-gray-500 text-sm">添加映射后，入参会自动应用到路径、Query 参数或 Body 中。</div>
+        ) : (
+          <div className="space-y-2">
+            {apiMappings.map((mapping, index) => (
+              <Row key={index} gutter={8} align="middle" className="p-2 hover:bg-gray-50 rounded transition-colors">
+                <Col flex={2}>
+                  <Select
+                    placeholder="选择入参"
+                    value={mapping.inputName || undefined}
+                    onChange={(value) => handleMappingChange(index, 'inputName', value)}
+                    className="w-full"
+                  >
+                    {selectedRequest.inputFields.map((field, fieldIndex) => (
+                      <Option key={`${field.name}-${fieldIndex}`} value={field.name} disabled={!field.name}>
+                        {field.name || `未命名 ${fieldIndex + 1}`}
+                      </Option>
+                    ))}
+                  </Select>
+                </Col>
+                <Col flex={1}>
+                  <Select
+                    value={mapping.target}
+                    onChange={(value) => handleMappingChange(index, 'target', value)}
+                    className="w-full"
+                  >
+                    <Option value="path">Path</Option>
+                    <Option value="params">Query</Option>
+                    <Option value="body">Body</Option>
+                  </Select>
+                </Col>
+                <Col flex={3}>
+                  <Input
+                    placeholder={mapping.target === 'path' ? '路径占位符名，如 id' : mapping.target === 'params' ? 'Query 参数名' : 'Body JSON 路径，如 data.userId'}
+                    value={mapping.key}
+                    onChange={(e) => handleMappingChange(index, 'key', e.target.value)}
+                  />
+                </Col>
+                <Col flex={1}>
+                  <Button
+                    type="text"
+                    danger
+                    icon={<DeleteOutlined />}
+                    onClick={() => handleRemoveMapping(index)}
+                    className="hover:bg-red-50"
+                  />
+                </Col>
+              </Row>
+            ))}
+          </div>
+        )}
+      </div>
+    ),
+  };
+
   const outputFieldsTab = {
-    key: '5',
+    key: '3',
     label: '出参字段',
     className: '[&_.ant-tabs-tab]:bg-purple-50/50 [&_.ant-tabs-tab-active]:bg-purple-100 [&_.ant-tabs-tab-active]:border-b-[#722ed1] [&_.ant-tabs-tab]:border-b-transparent',
     children: (
@@ -531,12 +567,7 @@ export const RequestEditor: React.FC = () => {
     ),
   };
 
-  const tabsItems = [...headerParamsItems];
-  if (['POST', 'PUT', 'PATCH'].includes(selectedRequest.method)) {
-    tabsItems.push(bodyTab);
-  }
-  tabsItems.push(inputFieldsTab);
-  tabsItems.push(outputFieldsTab);
+  const tabsItems = [inputFieldsTab, apiConfigTab, outputFieldsTab];
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
@@ -552,17 +583,9 @@ export const RequestEditor: React.FC = () => {
               className="w-48"
             />
           </Space>
-          <Popconfirm
-            title="删除请求"
-            description="确定要删除这个请求吗？"
-            onConfirm={handleDeleteRequest}
-            okText="确定"
-            cancelText="取消"
-          >
-            <Button danger icon={<DeleteOutlined />}>
-              删除请求
-            </Button>
-          </Popconfirm>
+          <Button type="primary" onClick={() => setDrawerOpen(true)}>
+            测试运行
+          </Button>
         </div>
         <Row gutter={16} align="middle">
           <Col span={4}>
@@ -588,106 +611,133 @@ export const RequestEditor: React.FC = () => {
               size="large"
             />
           </Col>
-          <Col span={4}>
-            <Button
-              type="primary"
-              icon={<SendOutlined />}
-              onClick={handleSend}
-              loading={loading}
-              className="w-full"
-              size="large"
-            >
-              发送
-            </Button>
-          </Col>
         </Row>
       </Card>
       <div className="flex-1 flex flex-col gap-4 overflow-hidden">
         <div className="flex-1 bg-white rounded-lg p-4 overflow-auto min-h-0">
           <Tabs items={tabsItems} />
         </div>
-        {response && (
-          <div className="bg-white rounded-lg p-4 flex flex-col min-h-0 border-t-4 border-blue-500">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-lg font-semibold text-gray-800">响应</h3>
-              <Space>
-                {response.status >= 200 && response.status < 300 && (
-                  <Tooltip title="从响应结果导入出参字段">
-                    <Button
-                      type="default"
-                      size="small"
-                      icon={<ImportOutlined />}
-                      onClick={extractOutputFieldsFromResponse}
-                    >
-                      导入出参
-                    </Button>
-                  </Tooltip>
-                )}
-                <span className={`px-3 py-1 rounded-full text-sm font-medium ${
-                  response.status >= 200 && response.status < 300
-                    ? 'bg-green-100 text-green-700'
-                    : response.status >= 400
-                    ? 'bg-red-100 text-red-700'
-                    : 'bg-yellow-100 text-yellow-700'
-                }`}>
-                  {response.status} {response.statusText || 'OK'}
-                </span>
-                {response.time && (
-                  <span className="text-gray-500 text-sm">
-                    {response.time}ms
-                  </span>
-                )}
-              </Space>
-            </div>
-            <Tabs
-              defaultActiveKey="body"
-              items={[
-                {
-                  key: 'body',
-                  label: 'Body',
-                  children: (
-                    <div className="h-full min-h-0">
-                      <div className="w-full border border-gray-300 rounded bg-[#1e1e1e]">
-                        <Editor
-                          height="400px"
-                          defaultLanguage="json"
-                          value={formatResponseData(response.data)}
-                          theme="vs-dark"
-                          options={{
-                            minimap: { enabled: false },
-                            fontSize: 14,
-                            scrollBeyondLastLine: false,
-                            wordWrap: 'on',
-                            readOnly: true,
-                          }}
-                        />
+      </div>
+      <Drawer
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+        placement="right"
+        width={640}
+        title={null}
+      >
+        <div className="flex items-center justify-between mb-4">
+          <div className="text-lg font-semibold text-gray-800">{selectedRequest.name}</div>
+          <Button type="primary" onClick={handleDebugRun} loading={testLoading}>
+            调试
+          </Button>
+        </div>
+        <Tabs
+          activeKey={activeTestTab}
+          onChange={(key) => setActiveTestTab(key as 'inputs' | 'results')}
+          items={[
+            {
+              key: 'inputs',
+              label: '入参',
+              children: (
+                <Form form={testForm} layout="vertical">
+                  <div className="space-y-2">
+                    {selectedRequest.inputFields.map((field, index) => {
+                      const nameKey = field.name || `field_${index + 1}`;
+                      return (
+                        <Form.Item
+                          key={nameKey}
+                          label={field.name || `未命名字段 ${index + 1}`}
+                          name={nameKey}
+                          rules={field.required ? [{ required: true, message: '必填项' }] : []}
+                        >
+                          <Input placeholder="请输入参数值" />
+                        </Form.Item>
+                      );
+                    })}
+                  </div>
+                </Form>
+              ),
+            },
+            {
+              key: 'results',
+              label: '运行结果',
+              children: (
+                <div className="space-y-4">
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="text-sm font-semibold text-gray-700">请求信息</div>
+                      <div className="text-xs text-gray-500">
+                        {response ? (
+                          <span>
+                            状态码 {response.status} · 耗时 {response.time ? `${response.time}ms` : '--'}
+                          </span>
+                        ) : (
+                          <span>尚未发送请求</span>
+                        )}
                       </div>
                     </div>
-                  ),
-                },
-                {
-                  key: 'headers',
-                  label: 'Headers',
-                  children: (
-                    <div className="space-y-2 bg-gray-50 p-4 rounded max-h-96 overflow-auto">
-                      {response.headers && Object.keys(response.headers).length > 0 ? (
-                        Object.entries(response.headers).map(([key, value]) => (
-                          <div key={key} className="flex items-start gap-3">
-                            <span className="font-semibold text-gray-700 min-w-32">{key}:</span>
-                            <span className="text-gray-600 break-all">{String(value)}</span>
-                          </div>
-                        ))
-                      ) : (
-                        <p className="text-gray-500">无响应头</p>
-                      )}
+                    <pre className="bg-gray-100 rounded p-3 text-xs whitespace-pre-wrap break-all">{curlPreview || '尚未发送请求'}</pre>
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="text-sm font-semibold text-gray-700">响应结果</div>
+                      <Button
+                        size="small"
+                        onClick={handleImportOutputFields}
+                        disabled={!parsedResponseData}
+                      >
+                        一键配置出参
+                      </Button>
                     </div>
-                  ),
-                },
-              ]}
-            />
-          </div>
-        )}
-      </div>
+                    <div className="border border-gray-200 rounded bg-white">
+                      <Editor
+                        height="260px"
+                        defaultLanguage="json"
+                        value={response ? formatResponseData(response.data) : ''}
+                        theme="vs"
+                        options={{
+                          minimap: { enabled: false },
+                          fontSize: 13,
+                          scrollBeyondLastLine: false,
+                          wordWrap: 'on',
+                          readOnly: true,
+                        }}
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-sm font-semibold text-gray-700 mb-2">响应头</div>
+                    <div className="border border-gray-200 rounded overflow-hidden">
+                      <table className="w-full text-sm">
+                        <thead className="bg-gray-50 text-gray-600">
+                          <tr>
+                            <th className="text-left px-3 py-2 w-1/2">Header</th>
+                            <th className="text-left px-3 py-2 w-1/2">Value</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {response?.headers && Object.keys(response.headers).length > 0 ? (
+                            Object.entries(response.headers).map(([key, value]) => (
+                              <tr key={key} className="border-t border-gray-100">
+                                <td className="px-3 py-2 text-gray-700">{key}</td>
+                                <td className="px-3 py-2 text-gray-600 break-all">{String(value)}</td>
+                              </tr>
+                            ))
+                          ) : (
+                            <tr>
+                              <td className="px-3 py-3 text-gray-500" colSpan={2}>无响应头</td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              ),
+            },
+          ]}
+        />
+      </Drawer>
     </div>
   );
 };

@@ -5,11 +5,9 @@ import {
   DeleteOutlined,
   EditOutlined,
   HolderOutlined,
-  ArrowLeftOutlined,
   VerticalAlignTopOutlined,
   VerticalAlignBottomOutlined,
 } from '@ant-design/icons';
-import { useNavigate } from 'react-router-dom';
 import { useRequestStore } from '../store/requestStore';
 import {
   DndContext,
@@ -137,7 +135,6 @@ function SortableItem({
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({ children }) => {
-  const navigate = useNavigate();
   const { requests, selectedRequestId, addRequest, deleteRequest, setSelectedRequest, updateRequest, reorderRequests } = useRequestStore();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
@@ -215,14 +212,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ children }) => {
       className="border-r border-gray-200 flex flex-col overflow-hidden request-sidebar"
       style={{ height: '100vh' }}
     >
-      <div className="h-12 flex items-center justify-between px-4 border-b border-gray-200 flex-shrink-0">
-        <Button
-          type="text"
-          icon={<ArrowLeftOutlined />}
-          onClick={() => navigate('/')}
-          className="text-gray-500 hover:text-gray-700"
-        />
-        <h2 className="text-lg font-semibold text-gray-800 margin-0">请求管理</h2>
+      <div className="h-12 flex items-center justify-end px-4 border-b border-gray-200 flex-shrink-0">
+        <h2 className="text-lg font-semibold text-gray-800 margin-0 text-right">请求管理</h2>
       </div>
       <div className="px-3 py-2 border-b border-gray-200 flex-shrink-0">
         <Select
