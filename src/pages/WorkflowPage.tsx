@@ -75,6 +75,11 @@ const COMPACT_NODE_SCALE = 0.85;
 const ORTHOGONAL_GAP = 30;
 const ROUTE_PADDING = 14;
 const EDGE_ADD_RADIUS = 14;
+const EDGE_ADD_HIT_RADIUS = 18;
+const INSERT_NODE_GAP = CONNECTOR_LENGTH + EDGE_ADD_RADIUS * 2 + 12;
+const ADD_PANEL_WIDTH = 280;
+const ADD_PANEL_HEIGHT = 300;
+const EDGE_CORNER_RADIUS = 10;
 
 const getMethodColor = (method: string) => {
   switch (method) {
@@ -116,7 +121,7 @@ const isRectOverlap = (a: { x: number; y: number; w: number; h: number }, b: { x
 
 type Point = { x: number; y: number };
 type RouteObstacle = { id: string; x: number; y: number; w: number; h: number };
-type EdgeAddAnchor = { key: string; x: number; y: number; afterRequestId: string };
+type EdgeAddAnchor = { key: string; x: number; y: number; afterRequestId: string | null };
 
 const isPointInsideRect = (point: Point, rect: { x1: number; y1: number; x2: number; y2: number }) =>
   point.x > rect.x1 && point.x < rect.x2 && point.y > rect.y1 && point.y < rect.y2;
@@ -154,7 +159,7 @@ const simplifyOrthogonalPath = (points: Point[]) => {
   return simplified;
 };
 
-const buildOrthogonalPath = (
+const tryBuildOrthogonalPath = (
   start: Point,
   end: Point,
   obstacles: RouteObstacle[],
@@ -174,6 +179,53 @@ const buildOrthogonalPath = (
       x2: obs.x + obs.w + ROUTE_PADDING,
       y2: obs.y + obs.h + ROUTE_PADDING,
     }));
+
+  // When target is above source, force a side detour so the edge still exits from
+  // source bottom and does not visually "come out" of the source top.
+  if (end.y <= start.y) {
+    const lateralOffset = NODE_WIDTH / 2 + ROUTE_PADDING + gap;
+    const sideCandidates = Array.from(
+      new Set([
+        start.x + lateralOffset,
+        start.x - lateralOffset,
+        end.x + lateralOffset,
+        end.x - lateralOffset,
+      ])
+    ).filter((x) => Math.abs(x - start.x) > 1);
+
+    let bestPath: Point[] | null = null;
+    let bestCost = Number.POSITIVE_INFINITY;
+
+    for (const sideX of sideCandidates) {
+      const candidate = [
+        start,
+        startAnchor,
+        { x: sideX, y: startAnchor.y },
+        { x: sideX, y: endAnchor.y },
+        endAnchor,
+        end,
+      ];
+      let blocked = false;
+      let cost = 0;
+      for (let i = 0; i < candidate.length - 1; i += 1) {
+        const a = candidate[i];
+        const b = candidate[i + 1];
+        if (isSegmentBlocked(a, b, expandedObstacles)) {
+          blocked = true;
+          break;
+        }
+        cost += Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+      }
+      if (!blocked && cost < bestCost) {
+        bestCost = cost;
+        bestPath = candidate;
+      }
+    }
+
+    if (bestPath) {
+      return simplifyOrthogonalPath(bestPath);
+    }
+  }
 
   const xSet = new Set<number>([startAnchor.x, endAnchor.x, 0, canvasWidth]);
   const ySet = new Set<number>([startAnchor.y, endAnchor.y, 0, canvasHeight]);
@@ -208,7 +260,7 @@ const buildOrthogonalPath = (
   const startKey = `${startAnchor.x},${startAnchor.y}`;
   const endKey = `${endAnchor.x},${endAnchor.y}`;
   if (!nodes.has(startKey) || !nodes.has(endKey)) {
-    return buildFallbackPath(start, end, gap);
+    return null;
   }
 
   const adjacency = new Map<string, Array<{ to: string; cost: number }>>();
@@ -262,7 +314,7 @@ const buildOrthogonalPath = (
   }
 
   if ((distances.get(endKey) || Number.POSITIVE_INFINITY) === Number.POSITIVE_INFINITY) {
-    return buildFallbackPath(start, end, gap);
+    return null;
   }
 
   const routed: Point[] = [];
@@ -276,6 +328,20 @@ const buildOrthogonalPath = (
 
   const path = [start, startAnchor, ...routed.slice(1, routed.length - 1), endAnchor, end];
   return simplifyOrthogonalPath(path);
+};
+
+const buildOrthogonalPath = (
+  start: Point,
+  end: Point,
+  obstacles: RouteObstacle[],
+  canvasWidth: number,
+  canvasHeight: number,
+  ignoreIds: string[] = [],
+  gap: number = ORTHOGONAL_GAP
+) => {
+  const routed = tryBuildOrthogonalPath(start, end, obstacles, canvasWidth, canvasHeight, ignoreIds, gap);
+  if (routed) return routed;
+  return buildFallbackPath(start, end, gap);
 };
 
 const getArrowAngle = (points: Point[]) => {
@@ -319,6 +385,46 @@ const getPolylineMidPoint = (points: Point[]) => {
   return points[points.length - 1];
 };
 
+const drawRoundedOrthogonalPath = (ctx: CanvasRenderingContext2D, points: Point[], radius: number) => {
+  if (points.length === 0) return;
+  if (points.length === 1) {
+    ctx.moveTo(points[0].x, points[0].y);
+    return;
+  }
+
+  ctx.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length - 1; i += 1) {
+    const prev = points[i - 1];
+    const curr = points[i];
+    const next = points[i + 1];
+    const dx1 = curr.x - prev.x;
+    const dy1 = curr.y - prev.y;
+    const dx2 = next.x - curr.x;
+    const dy2 = next.y - curr.y;
+
+    const len1 = Math.abs(dx1) + Math.abs(dy1);
+    const len2 = Math.abs(dx2) + Math.abs(dy2);
+    if (len1 === 0 || len2 === 0) {
+      ctx.lineTo(curr.x, curr.y);
+      continue;
+    }
+
+    const cornerRadius = Math.min(radius, len1 / 2, len2 / 2);
+    const ux1 = dx1 === 0 ? 0 : dx1 > 0 ? 1 : -1;
+    const uy1 = dy1 === 0 ? 0 : dy1 > 0 ? 1 : -1;
+    const ux2 = dx2 === 0 ? 0 : dx2 > 0 ? 1 : -1;
+    const uy2 = dy2 === 0 ? 0 : dy2 > 0 ? 1 : -1;
+
+    const p1 = { x: curr.x - ux1 * cornerRadius, y: curr.y - uy1 * cornerRadius };
+    const p2 = { x: curr.x + ux2 * cornerRadius, y: curr.y + uy2 * cornerRadius };
+
+    ctx.lineTo(p1.x, p1.y);
+    ctx.quadraticCurveTo(curr.x, curr.y, p2.x, p2.y);
+  }
+  const last = points[points.length - 1];
+  ctx.lineTo(last.x, last.y);
+};
+
 const drawOrthogonalArrow = (
   ctx: CanvasRenderingContext2D,
   start: Point,
@@ -335,11 +441,10 @@ const drawOrthogonalArrow = (
 
   ctx.strokeStyle = color;
   ctx.lineWidth = 2 / scale;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
   ctx.beginPath();
-  ctx.moveTo(points[0].x, points[0].y);
-  for (let i = 1; i < points.length; i += 1) {
-    ctx.lineTo(points[i].x, points[i].y);
-  }
+  drawRoundedOrthogonalPath(ctx, points, EDGE_CORNER_RADIUS);
   ctx.stroke();
 
   const angle = getArrowAngle(points);
@@ -365,10 +470,6 @@ const buildFallbackPath = (
   end: { x: number; y: number },
   gap: number = ORTHOGONAL_GAP
 ) => {
-  if (Math.abs(start.x - end.x) < 1) {
-    return [start, end];
-  }
-
   const exitY = start.y + gap;
   const entryY = end.y - gap;
 
@@ -449,7 +550,7 @@ export const WorkflowPage: React.FC = () => {
     const observer = new ResizeObserver(updateSize);
     observer.observe(container);
     return () => observer.disconnect();
-  }, []);
+  }, [selectedWorkflowId]);
 
   React.useEffect(() => {
     const container = canvasContainerRef.current;
@@ -592,11 +693,11 @@ export const WorkflowPage: React.FC = () => {
     ctx.lineWidth = 1 / view.scale;
     ctx.stroke();
     ctx.fillStyle = '#111827';
-    ctx.font = `600 ${14 / view.scale}px sans-serif`;
+    ctx.font = '600 14px sans-serif';
     ctx.fillText('手动触发器', triggerPos.x + 16, triggerPos.y + 34);
     if (!compactMode) {
       ctx.fillStyle = '#6b7280';
-      ctx.font = `${12 / view.scale}px sans-serif`;
+      ctx.font = '12px sans-serif';
       ctx.fillText('点击顶部按钮运行', triggerPos.x + 16, triggerPos.y + 56);
     }
 
@@ -645,6 +746,51 @@ export const WorkflowPage: React.FC = () => {
       }
     }
 
+    // Extend a short tail below the last node (or trigger when empty) with an add button.
+    if (selectedWorkflow.requests.length > 0) {
+      const lastReq = selectedWorkflow.requests[selectedWorkflow.requests.length - 1];
+      const lastPos = nodePositionsRef.current[lastReq.id];
+      if (lastPos) {
+        const tailStartX = lastPos.x + NODE_WIDTH / 2;
+        const tailStartY = lastPos.y + NODE_HEIGHT;
+        const tailLength = Math.max(26, Math.floor(CONNECTOR_LENGTH * 0.55));
+        const tailEndY = tailStartY + tailLength;
+
+        ctx.strokeStyle = '#94a3b8';
+        ctx.lineWidth = 2 / view.scale;
+        ctx.beginPath();
+        ctx.moveTo(tailStartX, tailStartY);
+        ctx.lineTo(tailStartX, tailEndY);
+        ctx.stroke();
+
+        edgeAnchors.push({
+          key: `tail-add-${lastReq.id}`,
+          x: tailStartX,
+          y: tailEndY,
+          afterRequestId: lastReq.id,
+        });
+      }
+    } else {
+      const tailStartX = triggerPos.x + TRIGGER_WIDTH / 2;
+      const tailStartY = triggerPos.y + TRIGGER_HEIGHT;
+      const tailLength = Math.max(26, Math.floor(CONNECTOR_LENGTH * 0.55));
+      const tailEndY = tailStartY + tailLength;
+
+      ctx.strokeStyle = '#94a3b8';
+      ctx.lineWidth = 2 / view.scale;
+      ctx.beginPath();
+      ctx.moveTo(tailStartX, tailStartY);
+      ctx.lineTo(tailStartX, tailEndY);
+      ctx.stroke();
+
+      edgeAnchors.push({
+        key: 'tail-add-trigger',
+        x: tailStartX,
+        y: tailEndY,
+        afterRequestId: null,
+      });
+    }
+
     edgeAddAnchorsRef.current = edgeAnchors;
     for (const anchor of edgeAnchors) {
       ctx.fillStyle = '#ffffff';
@@ -678,12 +824,12 @@ export const WorkflowPage: React.FC = () => {
       drawRoundedRect(ctx, pos.x + 12, pos.y + 12, 58, 20, 10);
       ctx.fill();
       ctx.fillStyle = '#ffffff';
-      ctx.font = `600 ${11 / view.scale}px sans-serif`;
+      ctx.font = '600 11px sans-serif';
       ctx.fillText(req.method, pos.x + 17, pos.y + 26);
 
       // Name
       ctx.fillStyle = '#111827';
-      ctx.font = `600 ${13 / view.scale}px sans-serif`;
+      ctx.font = '600 13px sans-serif';
       const rawName = req.name || `请求 ${index + 1}`;
       const displayName = compactMode && rawName.length > 10 ? `${rawName.slice(0, 10)}…` : rawName;
       ctx.fillText(displayName, pos.x + 12, pos.y + 52);
@@ -691,7 +837,7 @@ export const WorkflowPage: React.FC = () => {
       // Status
       if (!compactMode) {
         ctx.fillStyle = '#6b7280';
-        ctx.font = `${12 / view.scale}px sans-serif`;
+        ctx.font = '12px sans-serif';
         const statusText = status === 'success' ? '成功' : status === 'error' ? '失败' : '未运行';
         ctx.fillText('状态:', pos.x + 12, pos.y + 76);
         if (status === 'success') ctx.fillStyle = '#16a34a';
@@ -949,7 +1095,7 @@ const handleRunWorkflow = async () => {
     for (const anchor of edgeAddAnchorsRef.current) {
       const dx = x - anchor.x;
       const dy = y - anchor.y;
-      if (dx * dx + dy * dy <= EDGE_ADD_RADIUS * EDGE_ADD_RADIUS) {
+      if (dx * dx + dy * dy <= EDGE_ADD_HIT_RADIUS * EDGE_ADD_HIT_RADIUS) {
         return anchor;
       }
     }
@@ -963,6 +1109,33 @@ const handleRunWorkflow = async () => {
       afterRequestId: anchor.afterRequestId,
     });
     setAddPanelOpen(true);
+  };
+
+  const getAddPanelStyle = () => {
+    const container = canvasContainerRef.current;
+    const anchorScreenX = (addPanelPos.x - view.offsetX) * view.scale;
+    const anchorScreenY = (addPanelPos.y - view.offsetY) * view.scale;
+    const margin = 12;
+    const gap = 14;
+
+    if (!container) {
+      return {
+        left: anchorScreenX + gap,
+        top: anchorScreenY - ADD_PANEL_HEIGHT / 2,
+      };
+    }
+
+    const containerWidth = container.clientWidth;
+    const containerHeight = container.clientHeight;
+    const canPlaceRight = anchorScreenX + gap + ADD_PANEL_WIDTH <= containerWidth - margin;
+    const left = canPlaceRight
+      ? anchorScreenX + gap
+      : Math.max(margin, anchorScreenX - gap - ADD_PANEL_WIDTH);
+    const preferredTop = anchorScreenY - ADD_PANEL_HEIGHT / 2;
+    const maxTop = Math.max(margin, containerHeight - ADD_PANEL_HEIGHT - margin);
+    const top = Math.max(margin, Math.min(preferredTop, maxTop));
+
+    return { left, top };
   };
 
   const focusNode = (id: string) => {
@@ -984,8 +1157,8 @@ const handleRunWorkflow = async () => {
       .map((req) => nodePositionsRef.current[req.id])
       .filter(Boolean) as Array<{ x: number; y: number }>;
     const clamp = (x: number, y: number) => ({
-      x: Math.max(0, Math.min(canvasSize.width - NODE_WIDTH, snapToGrid(x, 20))),
-      y: Math.max(0, Math.min(canvasSize.height - NODE_HEIGHT, snapToGrid(y, 20))),
+      x: Math.max(0, snapToGrid(x, 20)),
+      y: Math.max(0, snapToGrid(y, 20)),
     });
     const tryPos = (x: number, y: number) => {
       const rect = { x, y, w: NODE_WIDTH, h: NODE_HEIGHT };
@@ -1006,6 +1179,81 @@ const handleRunWorkflow = async () => {
     return base;
   };
 
+  const canRouteAllConnections = (positions: Record<string, { x: number; y: number }>) => {
+    if (!selectedWorkflow) return true;
+    const obstacles: RouteObstacle[] = selectedWorkflow.requests
+      .map((req) => {
+        const pos = positions[req.id];
+        if (!pos) return null;
+        return { id: req.id, x: pos.x, y: pos.y, w: NODE_WIDTH, h: NODE_HEIGHT };
+      })
+      .filter(Boolean) as RouteObstacle[];
+
+    if (selectedWorkflow.requests.length > 0) {
+      const firstReq = selectedWorkflow.requests[0];
+      const firstPos = positions[firstReq.id];
+      if (firstPos) {
+        const triggerToFirst = tryBuildOrthogonalPath(
+          { x: triggerPos.x + TRIGGER_WIDTH / 2, y: triggerPos.y + TRIGGER_HEIGHT },
+          { x: firstPos.x + NODE_WIDTH / 2, y: firstPos.y },
+          obstacles,
+          canvasSize.width,
+          canvasSize.height,
+          [firstReq.id]
+        );
+        if (!triggerToFirst) return false;
+      }
+    }
+
+    for (let i = 0; i < selectedWorkflow.requests.length - 1; i += 1) {
+      const currentReq = selectedWorkflow.requests[i];
+      const nextReq = selectedWorkflow.requests[i + 1];
+      const currentPos = positions[currentReq.id];
+      const nextPos = positions[nextReq.id];
+      if (!currentPos || !nextPos) continue;
+      const routed = tryBuildOrthogonalPath(
+        { x: currentPos.x + NODE_WIDTH / 2, y: currentPos.y + NODE_HEIGHT },
+        { x: nextPos.x + NODE_WIDTH / 2, y: nextPos.y },
+        obstacles,
+        canvasSize.width,
+        canvasSize.height,
+        [currentReq.id, nextReq.id]
+      );
+      if (!routed) return false;
+    }
+
+    return true;
+  };
+
+  const findConnectionSafePosition = (id: string, desired: { x: number; y: number }) => {
+    const base = findNonOverlappingPosition(id, desired);
+    const basePositions = { ...nodePositionsRef.current, [id]: base };
+    if (canRouteAllConnections(basePositions)) {
+      // Prefer rerouting lines first; keep dropped position if routes are valid.
+      return base;
+    }
+
+    const visited = new Set<string>([`${base.x},${base.y}`]);
+    const step = 20;
+    for (let r = step; r <= 360; r += step) {
+      for (let dx = -r; dx <= r; dx += step) {
+        for (let dy = -r; dy <= r; dy += step) {
+          if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
+          const candidate = findNonOverlappingPosition(id, { x: base.x + dx, y: base.y + dy });
+          const key = `${candidate.x},${candidate.y}`;
+          if (visited.has(key)) continue;
+          visited.add(key);
+          const candidatePositions = { ...nodePositionsRef.current, [id]: candidate };
+          if (canRouteAllConnections(candidatePositions)) {
+            return candidate;
+          }
+        }
+      }
+    }
+
+    return base;
+  };
+
   const handleRequestSelect = (requestId: string) => {
     if (!selectedWorkflow) return;
     const request = requests.find((r) => r.id === requestId);
@@ -1019,22 +1267,65 @@ const handleRunWorkflow = async () => {
         outputFields: request.outputFields || [],
         apiMappings: request.apiMappings || [],
       };
-      const currentRequests = [...selectedWorkflow.requests];
+      const existingRequests = [...selectedWorkflow.requests];
+      const currentRequests = [...existingRequests];
       const insertIndex = addPanelPos.afterRequestId
         ? currentRequests.findIndex((req) => req.id === addPanelPos.afterRequestId) + 1
         : currentRequests.length;
       const normalizedIndex = insertIndex < 0 ? currentRequests.length : insertIndex;
       currentRequests.splice(normalizedIndex, 0, nextRequest as any);
 
-      const desired = {
-        x: addPanelPos.x - NODE_WIDTH / 2,
-        y: addPanelPos.y - NODE_HEIGHT / 2,
-      };
-      const snapped = findNonOverlappingPosition(newId, desired);
-      const nextPositions = {
+      const clampPos = (x: number, y: number, snapX: boolean = true, snapY: boolean = true) => ({
+        x: Math.max(0, snapX ? snapToGrid(x, 20) : x),
+        y: Math.max(0, snapY ? snapToGrid(y, 20) : y),
+      });
+
+      const prevReq = normalizedIndex > 0 ? currentRequests[normalizedIndex - 1] : null;
+      const nextReq = normalizedIndex < existingRequests.length ? existingRequests[normalizedIndex] : null;
+      const prevPos = prevReq ? nodePositionsRef.current[prevReq.id] : null;
+      const nextPos = nextReq ? nodePositionsRef.current[nextReq.id] : null;
+
+      const nextPositions: Record<string, { x: number; y: number }> = {
         ...nodePositions,
-        [newId]: snapped,
       };
+
+      let targetX = addPanelPos.x - NODE_WIDTH / 2;
+      let targetY = addPanelPos.y - NODE_HEIGHT / 2;
+
+      if (!prevReq && existingRequests.length === 0) {
+        // First real node: place below trigger with clear gap for connector and add button.
+        targetX = triggerPos.x + TRIGGER_WIDTH / 2 - NODE_WIDTH / 2;
+        targetY = triggerPos.y + TRIGGER_HEIGHT + INSERT_NODE_GAP;
+      } else if (prevPos && !nextPos) {
+        // Append at tail: place directly under previous node with visible gap.
+        targetX = prevPos.x;
+        targetY = prevPos.y + NODE_HEIGHT + INSERT_NODE_GAP;
+      } else if (prevPos && nextPos) {
+        // Insert in middle: place between previous and next with spacing on both sides.
+        const minY = prevPos.y + NODE_HEIGHT + INSERT_NODE_GAP;
+        const maxY = nextPos.y - NODE_HEIGHT - INSERT_NODE_GAP;
+        targetX = (prevPos.x + nextPos.x) / 2;
+
+        if (minY <= maxY) {
+          targetY = (minY + maxY) / 2;
+        } else {
+          const requiredShift = snapToGrid(minY - maxY, 20);
+          for (let i = normalizedIndex; i < existingRequests.length; i += 1) {
+            const reqToShift = existingRequests[i];
+            const original = nextPositions[reqToShift.id] || nodePositionsRef.current[reqToShift.id];
+            if (!original) continue;
+            nextPositions[reqToShift.id] = clampPos(original.x, original.y + requiredShift);
+          }
+          targetY = minY;
+        }
+      };
+
+      if (!prevReq && existingRequests.length === 0) {
+        // Keep first node center exactly aligned with trigger center so the connector is vertical.
+        nextPositions[newId] = clampPos(targetX, targetY, false, true);
+      } else {
+        nextPositions[newId] = clampPos(targetX, targetY);
+      }
       setNodePositions(nextPositions);
       updateWorkflow(selectedWorkflow.id, { requests: currentRequests, nodePositions: nextPositions });
       setSelectedNodeId(newId);
@@ -1109,10 +1400,10 @@ const handleRunWorkflow = async () => {
 
     if (dragRef.current.id) {
       const id = dragRef.current.id;
-      const newX = snapToGrid(x - dragRef.current.offsetX, 20);
-      const newY = snapToGrid(y - dragRef.current.offsetY, 20);
-      const clampedX = Math.max(0, Math.min(canvasSize.width - NODE_WIDTH, newX));
-      const clampedY = Math.max(0, Math.min(canvasSize.height - NODE_HEIGHT, newY));
+      const newX = x - dragRef.current.offsetX;
+      const newY = y - dragRef.current.offsetY;
+      const clampedX = Math.max(0, newX);
+      const clampedY = Math.max(0, newY);
       if (Math.abs(x - dragRef.current.startX) > 4 || Math.abs(y - dragRef.current.startY) > 4) {
         dragRef.current.moved = true;
       }
@@ -1125,13 +1416,30 @@ const handleRunWorkflow = async () => {
 
   const handleCanvasMouseUp = (event: React.MouseEvent<HTMLCanvasElement>) => {
     if (!selectedWorkflow) return;
-    if (dragRef.current.mode === 'pan') {
-      dragRef.current.mode = null;
-      return;
-    }
     const { x, y } = getCanvasPoint(event);
     const dragId = dragRef.current.id;
     const moved = dragRef.current.moved;
+
+    if (dragRef.current.mode === 'pan') {
+      const stillClick =
+        Math.abs(event.clientX - dragRef.current.startX) <= 3 &&
+        Math.abs(event.clientY - dragRef.current.startY) <= 3;
+      if (stillClick && !dragId) {
+        const edgeAdd = hitTestEdgeAdd(x, y);
+        if (edgeAdd) {
+          openAddPanel({ x: edgeAdd.x, y: edgeAdd.y, afterRequestId: edgeAdd.afterRequestId });
+        }
+      }
+      dragRef.current.mode = null;
+      return;
+    }
+
+    if (!dragId) {
+      const edgeAdd = hitTestEdgeAdd(x, y);
+      if (edgeAdd) {
+        openAddPanel({ x: edgeAdd.x, y: edgeAdd.y, afterRequestId: edgeAdd.afterRequestId });
+      }
+    }
 
     if (dragId) {
       if (!moved) {
@@ -1141,10 +1449,10 @@ const handleRunWorkflow = async () => {
     if (dragId && moved) {
       const current = nodePositionsRef.current[dragId];
       if (current) {
-        const snapped = findNonOverlappingPosition(dragId, current);
-        if (snapped.x !== current.x || snapped.y !== current.y) {
+        const adjusted = findConnectionSafePosition(dragId, current);
+        if (adjusted.x !== current.x || adjusted.y !== current.y) {
           setNodePositions((prev) => {
-            const next = { ...prev, [dragId]: snapped };
+            const next = { ...prev, [dragId]: adjusted };
             updateWorkflow(selectedWorkflow.id, { nodePositions: next });
             return next;
           });
@@ -1547,10 +1855,7 @@ const handleRunWorkflow = async () => {
                   <div
                     ref={addPanelRef}
                     className="absolute bg-white border border-gray-200 rounded-lg shadow-lg w-[280px] p-3 z-20"
-                    style={{
-                      left: (addPanelPos.x - view.offsetX) * view.scale + 16,
-                      top: (addPanelPos.y - view.offsetY) * view.scale - 190,
-                    }}
+                    style={getAddPanelStyle()}
                   >
                     <Input
                       size="small"

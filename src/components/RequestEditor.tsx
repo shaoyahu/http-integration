@@ -611,6 +611,7 @@ export const RequestEditor: React.FC = () => {
               size="large"
             />
           </Col>
+          <Col span={4} />
         </Row>
       </Card>
       <div className="flex-1 flex flex-col gap-4 overflow-hidden">

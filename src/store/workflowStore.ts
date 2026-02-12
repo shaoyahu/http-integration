@@ -57,20 +57,25 @@ interface WorkflowStore {
 export const useWorkflowStore = create<WorkflowStore>((set) => ({
   workflows: [],
   selectedWorkflowId: null,
-  addWorkflow: () => set((state) => ({
-    workflows: [
-      ...state.workflows,
-      {
-        id: Date.now().toString(),
-        name: `工作流 ${state.workflows.length + 1}`,
-        requests: [],
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-        nodePositions: {},
-      },
-    ],
-    selectedWorkflowId: Date.now().toString(),
-  })),
+  addWorkflow: () =>
+    set((state) => {
+      const now = Date.now()
+      const workflowId = now.toString()
+      return {
+        workflows: [
+          ...state.workflows,
+          {
+            id: workflowId,
+            name: `工作流 ${state.workflows.length + 1}`,
+            requests: [],
+            createdAt: now,
+            updatedAt: now,
+            nodePositions: {},
+          },
+        ],
+        selectedWorkflowId: workflowId,
+      }
+    }),
   updateWorkflow: (id, updates) =>
     set((state) => ({
       workflows: state.workflows.map((wf) =>

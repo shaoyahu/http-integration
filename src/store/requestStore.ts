@@ -48,8 +48,22 @@ interface RequestStore {
   setSelectedRequest: (id: string | null) => void
 }
 
+const DEFAULT_REQUEST_ID = 'default-feishu-callback'
+const DEFAULT_REQUEST: HttpRequest = {
+  id: DEFAULT_REQUEST_ID,
+  name: '飞书回调示例',
+  method: 'POST',
+  url: 'https://open.feishu.cn/anycross/trigger/callback/MDY1NThjOGZlYzE0ZGUxNTNiY2U4N2RkYzQ1YzU0ZmZk',
+  headers: [],
+  params: [],
+  body: JSON.stringify({}, null, 2),
+  inputFields: [],
+  outputFields: [],
+  apiMappings: [],
+}
+
 export const useRequestStore = create<RequestStore>((set) => ({
-  requests: [],
+  requests: [DEFAULT_REQUEST],
   addRequest: () => set((state) => {
     const id = Date.now().toString();
     return {
@@ -62,11 +76,11 @@ export const useRequestStore = create<RequestStore>((set) => ({
           url: '',
           headers: [],
           params: [],
-        body: JSON.stringify({}, null, 2),
-        inputFields: [],
-        outputFields: [],
-        apiMappings: [],
-      },
+          body: JSON.stringify({}, null, 2),
+          inputFields: [],
+          outputFields: [],
+          apiMappings: [],
+        },
       ],
       selectedRequestId: id,
     };
@@ -89,6 +103,6 @@ export const useRequestStore = create<RequestStore>((set) => ({
       newRequests.splice(newIndex, 0, movedItem);
       return { requests: newRequests };
     }),
-  selectedRequestId: null,
+  selectedRequestId: DEFAULT_REQUEST_ID,
   setSelectedRequest: (id) => set({ selectedRequestId: id }),
 }))
