@@ -64,6 +64,7 @@ export const RequestEditor: React.FC = () => {
   const [drawerOpen, setDrawerOpen] = React.useState(false);
   const [activeTestTab, setActiveTestTab] = React.useState<'inputs' | 'results'>('inputs');
   const [curlPreview, setCurlPreview] = React.useState('');
+  const [isMethodEditing, setIsMethodEditing] = React.useState(false);
 
   const selectedRequest = requests.find((req) => req.id === selectedRequestId);
 
@@ -94,6 +95,10 @@ export const RequestEditor: React.FC = () => {
       setActiveTestTab('inputs');
     }
   }, [drawerOpen, selectedRequest, testForm]);
+
+  useEffect(() => {
+    setIsMethodEditing(false);
+  }, [selectedRequestId]);
 
   const handleRenameRequest = () => {
     if (!selectedRequestId || !requestName.trim()) {
@@ -589,19 +594,31 @@ export const RequestEditor: React.FC = () => {
         </div>
         <Row gutter={16} align="middle">
           <Col span={4}>
-            <Select
-              value={selectedRequest.method}
-              onChange={(value) =>
-                updateRequest(selectedRequest.id, { method: value })
-              }
-              className="w-full"
-            >
-              <Option value="GET">GET</Option>
-              <Option value="POST">POST</Option>
-              <Option value="PUT">PUT</Option>
-              <Option value="DELETE">DELETE</Option>
-              <Option value="PATCH">PATCH</Option>
-            </Select>
+            {isMethodEditing ? (
+              <Select
+                value={selectedRequest.method}
+                onChange={(value) => {
+                  updateRequest(selectedRequest.id, { method: value });
+                  setIsMethodEditing(false);
+                }}
+                onBlur={() => setIsMethodEditing(false)}
+                className="w-full"
+                autoFocus
+              >
+                <Option value="GET">GET</Option>
+                <Option value="POST">POST</Option>
+                <Option value="PUT">PUT</Option>
+                <Option value="DELETE">DELETE</Option>
+                <Option value="PATCH">PATCH</Option>
+              </Select>
+            ) : (
+              <div
+                className="h-10 px-3 border border-gray-200 rounded-md flex items-center text-gray-700 cursor-pointer hover:border-blue-400"
+                onClick={() => setIsMethodEditing(true)}
+              >
+                {selectedRequest.method}
+              </div>
+            )}
           </Col>
           <Col span={16}>
             <Input
