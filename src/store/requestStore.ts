@@ -51,7 +51,7 @@ interface RequestStore {
 const DEFAULT_REQUEST_ID = 'default-feishu-callback'
 const DEFAULT_REQUEST: HttpRequest = {
   id: DEFAULT_REQUEST_ID,
-  name: '飞书回调示例',
+  name: '默认请求示例',
   method: 'POST',
   url: 'https://open.feishu.cn/anycross/trigger/callback/MDY1NThjOGZlYzE0ZGUxNTNiY2U4N2RkYzQ1YzU0ZmZk',
   headers: [],
