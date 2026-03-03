@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react';
-import { Form, Input, Select, Button, Tabs, Card, Space, Row, Col, message, Drawer } from 'antd';
-import { PlusOutlined, DeleteOutlined } from '@ant-design/icons';
+import { Form, Input, Select, Button, Tabs, Card, Row, Col, message, Drawer, Popconfirm } from 'antd';
+import { PlusOutlined, DeleteOutlined, InfoCircleOutlined } from '@ant-design/icons';
 import { useRequestStore } from '../store/requestStore';
 import { proxyRequest } from '../api/http';
 import Editor from '@monaco-editor/react';
@@ -59,11 +59,24 @@ export const RequestEditor: React.FC = () => {
   const [testForm] = Form.useForm();
   const [testLoading, setTestLoading] = React.useState(false);
   const [requestName, setRequestName] = React.useState('');
+  const [requestDescription, setRequestDescription] = React.useState('');
+  const [draftMethod, setDraftMethod] = React.useState('GET');
+  const [draftUrl, setDraftUrl] = React.useState('');
+  const [isEditingBasicInfo, setIsEditingBasicInfo] = React.useState(false);
   const [response, setResponse] = React.useState<any>(null);
   const [previousRequestId, setPreviousRequestId] = React.useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = React.useState(false);
   const [activeTestTab, setActiveTestTab] = React.useState<'inputs' | 'results'>('inputs');
   const [curlPreview, setCurlPreview] = React.useState('');
+  const [editSnapshot, setEditSnapshot] = React.useState<{
+    name: string;
+    description: string;
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
+    url: string;
+    inputFields: any[];
+    outputFields: any[];
+    apiMappings: any[];
+  } | null>(null);
 
   const selectedRequest = requests.find((req) => req.id === selectedRequestId);
 
@@ -72,10 +85,20 @@ export const RequestEditor: React.FC = () => {
     if (selectedRequestId !== previousRequestId) {
       if (selectedRequest) {
         setRequestName(selectedRequest.name);
+        setRequestDescription(selectedRequest.description || '');
+        setDraftMethod(selectedRequest.method);
+        setDraftUrl(selectedRequest.url);
+        setIsEditingBasicInfo(false);
+        setEditSnapshot(null);
         // 清除响应结果
         setResponse(null);
       } else {
         setRequestName('');
+        setRequestDescription('');
+        setDraftMethod('GET');
+        setDraftUrl('');
+        setIsEditingBasicInfo(false);
+        setEditSnapshot(null);
         // 清除响应结果
         setResponse(null);
       }
@@ -95,16 +118,94 @@ export const RequestEditor: React.FC = () => {
     }
   }, [drawerOpen, selectedRequest, testForm]);
 
-  const handleRenameRequest = () => {
+  const handleSaveBasicInfo = () => {
     if (!selectedRequestId || !requestName.trim()) {
       message.error('请输入请求名称');
       return;
     }
-    updateRequest(selectedRequestId, { name: requestName.trim() });
-    message.success('请求已重命名');
+    if (!selectedRequest) {
+      return;
+    }
+    const incompleteMappingsForSave = (selectedRequest.apiMappings || []).filter(
+      (mapping) => !mapping.inputName?.trim() || !mapping.key?.trim()
+    );
+    if (incompleteMappingsForSave.length > 0) {
+      message.error('API 配置中存在未完整填写的映射，无法保存');
+      return;
+    }
+    const nextName = requestName.trim();
+    const nextDescription = requestDescription.trim();
+    const nextMethod = draftMethod;
+    const nextUrl = draftUrl.trim();
+    if (
+      selectedRequest.name === nextName &&
+      (selectedRequest.description || '') === nextDescription &&
+      selectedRequest.method === nextMethod &&
+      selectedRequest.url === nextUrl
+    ) {
+      setIsEditingBasicInfo(false);
+      setEditSnapshot(null);
+      return;
+    }
+    updateRequest(selectedRequestId, {
+      name: nextName,
+      description: nextDescription,
+      method: nextMethod,
+      url: nextUrl,
+    });
+    setIsEditingBasicInfo(false);
+    setEditSnapshot(null);
+    message.success('请求信息已更新');
+  };
+
+  const handleCancelEditBasicInfo = () => {
+    if (selectedRequest && editSnapshot) {
+      updateRequest(selectedRequest.id, {
+        name: editSnapshot.name,
+        description: editSnapshot.description,
+        method: editSnapshot.method,
+        url: editSnapshot.url,
+        inputFields: editSnapshot.inputFields,
+        outputFields: editSnapshot.outputFields,
+        apiMappings: editSnapshot.apiMappings,
+      });
+      setRequestName(editSnapshot.name);
+      setRequestDescription(editSnapshot.description);
+      setDraftMethod(editSnapshot.method);
+      setDraftUrl(editSnapshot.url);
+    } else {
+      setRequestName(selectedRequest?.name || '');
+      setRequestDescription(selectedRequest?.description || '');
+      setDraftMethod(selectedRequest?.method || 'GET');
+      setDraftUrl(selectedRequest?.url || '');
+    }
+    setIsEditingBasicInfo(false);
+    setEditSnapshot(null);
+  };
+
+  const handleStartEditBasicInfo = () => {
+    if (!selectedRequest) return;
+    setEditSnapshot({
+      name: selectedRequest.name,
+      description: selectedRequest.description || '',
+      method: selectedRequest.method,
+      url: selectedRequest.url,
+      inputFields: selectedRequest.inputFields.map((field) => ({ ...field })),
+      outputFields: selectedRequest.outputFields.map((field) => ({ ...field })),
+      apiMappings: (selectedRequest.apiMappings || []).map((mapping) => ({ ...mapping })),
+    });
+    setRequestName(selectedRequest.name);
+    setRequestDescription(selectedRequest.description || '');
+    setDraftMethod(selectedRequest.method);
+    setDraftUrl(selectedRequest.url);
+    setIsEditingBasicInfo(true);
   };
 
   const handleImportOutputFields = () => {
+    if (!isEditingBasicInfo) {
+      message.warning('请先点击编辑，再配置出参字段');
+      return;
+    }
     if (!response || !selectedRequest) return;
     const parsed = parseResponseData(response.data);
     if (!parsed) {
@@ -201,7 +302,7 @@ export const RequestEditor: React.FC = () => {
     }
     try {
       const incompleteMappings = (selectedRequest.apiMappings || []).filter(
-        (mapping) => !mapping.inputName || !mapping.key
+        (mapping) => !mapping.inputName?.trim() || !mapping.key?.trim()
       );
       if (incompleteMappings.length > 0) {
         message.warning('API 配置中存在未完整填写的映射');
@@ -281,6 +382,7 @@ export const RequestEditor: React.FC = () => {
   };
 
   const handleAddInputField = () => {
+    if (!isEditingBasicInfo) return;
     if (selectedRequest) {
       updateRequest(selectedRequest.id, {
         inputFields: [...selectedRequest.inputFields, { name: '', type: 'params', required: false, value: '', description: '' }],
@@ -289,6 +391,7 @@ export const RequestEditor: React.FC = () => {
   };
 
   const handleRemoveInputField = (index: number) => {
+    if (!isEditingBasicInfo) return;
     if (selectedRequest) {
       const newInputFields = [...selectedRequest.inputFields];
       newInputFields.splice(index, 1);
@@ -297,6 +400,7 @@ export const RequestEditor: React.FC = () => {
   };
 
   const handleInputChange = (index: number, field: 'name' | 'type' | 'required' | 'description' | 'value', value: any) => {
+    if (!isEditingBasicInfo) return;
     if (selectedRequest) {
       const newInputFields = [...selectedRequest.inputFields];
       const previousName = newInputFields[index]?.name;
@@ -312,6 +416,7 @@ export const RequestEditor: React.FC = () => {
   };
 
   const handleAddOutputField = () => {
+    if (!isEditingBasicInfo) return;
     if (selectedRequest) {
       updateRequest(selectedRequest.id, {
         outputFields: [...selectedRequest.outputFields, { name: '', path: '', description: '' }],
@@ -320,6 +425,7 @@ export const RequestEditor: React.FC = () => {
   };
 
   const handleRemoveOutputField = (index: number) => {
+    if (!isEditingBasicInfo) return;
     if (selectedRequest) {
       const newOutputFields = [...selectedRequest.outputFields];
       newOutputFields.splice(index, 1);
@@ -328,6 +434,7 @@ export const RequestEditor: React.FC = () => {
   };
 
   const handleOutputChange = (index: number, field: 'name' | 'path' | 'description', value: string) => {
+    if (!isEditingBasicInfo) return;
     if (selectedRequest) {
       const newOutputFields = [...selectedRequest.outputFields];
       newOutputFields[index] = { ...newOutputFields[index], [field]: value };
@@ -336,6 +443,7 @@ export const RequestEditor: React.FC = () => {
   };
 
   const handleAddMapping = () => {
+    if (!isEditingBasicInfo) return;
     if (selectedRequest) {
       updateRequest(selectedRequest.id, {
         apiMappings: [...(selectedRequest.apiMappings || []), { inputName: '', target: 'params', key: '' }],
@@ -344,6 +452,7 @@ export const RequestEditor: React.FC = () => {
   };
 
   const handleRemoveMapping = (index: number) => {
+    if (!isEditingBasicInfo) return;
     if (selectedRequest) {
       const newMappings = [...(selectedRequest.apiMappings || [])];
       newMappings.splice(index, 1);
@@ -352,6 +461,7 @@ export const RequestEditor: React.FC = () => {
   };
 
   const handleMappingChange = (index: number, field: 'inputName' | 'target' | 'key', value: string) => {
+    if (!isEditingBasicInfo) return;
     if (selectedRequest) {
       const newMappings = [...(selectedRequest.apiMappings || [])];
       newMappings[index] = { ...newMappings[index], [field]: value };
@@ -369,17 +479,66 @@ export const RequestEditor: React.FC = () => {
 
   const apiMappings = selectedRequest.apiMappings || [];
   const parsedResponseData = response ? parseResponseData(response.data) : null;
-  const incompleteMappings = apiMappings.filter((mapping) => !mapping.inputName || !mapping.key);
+  const incompleteMappings = apiMappings.filter((mapping) => !mapping.inputName?.trim() || !mapping.key?.trim());
+  const currentUrl = isEditingBasicInfo ? draftUrl : selectedRequest.url;
   const pathMappingsMissingPlaceholder = apiMappings
-    .filter((mapping) => mapping.target === 'path' && mapping.key && !hasPathPlaceholder(selectedRequest.url, mapping.key))
+    .filter((mapping) => mapping.target === 'path' && mapping.key && !hasPathPlaceholder(currentUrl, mapping.key))
     .map((mapping) => mapping.key);
   const mappedInputs = new Set(apiMappings.map((mapping) => mapping.inputName).filter(Boolean));
   const unmappedInputs = selectedRequest.inputFields
     .map((field) => field.name)
     .filter((name) => name && !mappedInputs.has(name));
 
+  const basicInfoTab = {
+    key: 'basic',
+    label: '基本信息',
+    className: '[&_.ant-tabs-tab]:bg-cyan-50/50 [&_.ant-tabs-tab-active]:bg-cyan-100 [&_.ant-tabs-tab-active]:border-b-[#0891b2] [&_.ant-tabs-tab]:border-b-transparent',
+    children: (
+      <div className="space-y-3">
+        <div>
+          <div className="mb-1 text-sm font-medium text-gray-700">请求名称</div>
+          {isEditingBasicInfo ? (
+            <Input
+              value={requestName}
+              onChange={(e) => setRequestName(e.target.value)}
+              onPressEnter={handleSaveBasicInfo}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  handleCancelEditBasicInfo();
+                }
+              }}
+              placeholder="请求名称"
+              className="max-w-xl"
+              autoFocus
+            />
+          ) : (
+            <div className="min-h-8 px-2 py-1 text-sm text-gray-800">
+              {selectedRequest.name || '-'}
+            </div>
+          )}
+        </div>
+        <div>
+          <div className="mb-1 text-sm font-medium text-gray-700">请求描述</div>
+          {isEditingBasicInfo ? (
+            <Input.TextArea
+              value={requestDescription}
+              onChange={(e) => setRequestDescription(e.target.value)}
+              placeholder="可选：补充这个请求的用途或说明"
+              rows={3}
+              className="max-w-xl"
+            />
+          ) : (
+            <div className="min-h-8 px-2 py-1 text-sm text-gray-700 whitespace-pre-wrap">
+              {selectedRequest.description || '-'}
+            </div>
+          )}
+        </div>
+      </div>
+    ),
+  };
+
   const inputFieldsTab = {
-    key: '1',
+    key: 'input',
     label: '入参字段',
     className: '[&_.ant-tabs-tab]:bg-orange-50/50 [&_.ant-tabs-tab-active]:bg-orange-100 [&_.ant-tabs-tab-active]:border-b-[#fa8c16] [&_.ant-tabs-tab]:border-b-transparent',
     children: (
@@ -387,68 +546,150 @@ export const RequestEditor: React.FC = () => {
         {selectedRequest.inputFields.map((field, index) => (
           <Row key={index} gutter={8} align="middle" className="p-2 hover:bg-orange-50 rounded transition-colors">
             <Col flex={2}>
-              <Input
-                placeholder="字段名称"
-                value={field.name}
-                onChange={(e) => handleInputChange(index, 'name', e.target.value)}
-                className="border-orange-200 focus:border-orange-400"
-              />
+              {isEditingBasicInfo ? (
+                <Input
+                  placeholder="字段名称"
+                  value={field.name}
+                  onChange={(e) => handleInputChange(index, 'name', e.target.value)}
+                  className="border-orange-200 focus:border-orange-400"
+                />
+              ) : (
+                <div className="min-h-8 px-2 py-1 text-sm text-gray-700">
+                  {field.name || '-'}
+                </div>
+              )}
             </Col>
             <Col flex={2}>
-              <Input
-                placeholder="默认值/测试值"
-                value={field.value}
-                onChange={(e) => handleInputChange(index, 'value', e.target.value)}
-                className="border-orange-200 focus:border-orange-400"
-              />
+              {isEditingBasicInfo ? (
+                <Input
+                  placeholder="默认值/测试值"
+                  value={field.value}
+                  onChange={(e) => handleInputChange(index, 'value', e.target.value)}
+                  className="border-orange-200 focus:border-orange-400"
+                />
+              ) : (
+                <div className="min-h-8 px-2 py-1 text-sm text-gray-700">
+                  {field.value || '-'}
+                </div>
+              )}
             </Col>
             <Col flex={1}>
-              <Select
-                value={field.required ? '必填' : '可选'}
-                onChange={(value) => handleInputChange(index, 'required', value === '必填')}
-                className="border-orange-200"
-              >
-                <Option value="必填">必填</Option>
-                <Option value="可选">可选</Option>
-              </Select>
+              {isEditingBasicInfo ? (
+                <Select
+                  value={field.required ? '必填' : '可选'}
+                  onChange={(value) => handleInputChange(index, 'required', value === '必填')}
+                  className="border-orange-200"
+                >
+                  <Option value="必填">必填</Option>
+                  <Option value="可选">可选</Option>
+                </Select>
+              ) : (
+                <div className="min-h-8 px-2 py-1 text-sm text-gray-700">
+                  {field.required ? '必填' : '可选'}
+                </div>
+              )}
             </Col>
             <Col flex={3}>
-              <Input
-                placeholder="描述"
-                value={field.description}
-                onChange={(e) => handleInputChange(index, 'description', e.target.value)}
-                className="border-orange-200 focus:border-orange-400"
-              />
+              {isEditingBasicInfo ? (
+                <Input
+                  placeholder="描述"
+                  value={field.description}
+                  onChange={(e) => handleInputChange(index, 'description', e.target.value)}
+                  className="border-orange-200 focus:border-orange-400"
+                />
+              ) : (
+                <div className="min-h-8 px-2 py-1 text-sm text-gray-700">
+                  {field.description || '-'}
+                </div>
+              )}
             </Col>
             <Col flex={1}>
-              <Button
-                type="text"
-                danger
-                icon={<DeleteOutlined />}
-                onClick={() => handleRemoveInputField(index)}
-                className="hover:bg-red-50"
-              />
+              {isEditingBasicInfo ? (
+                <Popconfirm
+                  title="确认删除该入参字段？"
+                  okText="删除"
+                  cancelText="取消"
+                  onConfirm={() => handleRemoveInputField(index)}
+                >
+                  <Button
+                    type="text"
+                    danger
+                    icon={<DeleteOutlined />}
+                    className="hover:bg-red-50"
+                  />
+                </Popconfirm>
+              ) : (
+                <div className="min-h-8" />
+              )}
             </Col>
           </Row>
         ))}
-        <Button type="dashed" onClick={handleAddInputField} icon={<PlusOutlined />} block className="border-orange-300 text-orange-600 hover:border-orange-400 hover:text-orange-700 hover:bg-orange-50">
-          添加入参字段
-        </Button>
+        {isEditingBasicInfo && (
+          <Button type="dashed" onClick={handleAddInputField} icon={<PlusOutlined />} block className="border-orange-300 text-orange-600 hover:border-orange-400 hover:text-orange-700 hover:bg-orange-50">
+            添加入参字段
+          </Button>
+        )}
       </div>
     ),
   };
 
   const apiConfigTab = {
-    key: '2',
+    key: 'api',
     label: 'API 配置',
     className: '[&_.ant-tabs-tab]:bg-slate-50/50 [&_.ant-tabs-tab-active]:bg-slate-100 [&_.ant-tabs-tab-active]:border-b-[#64748b] [&_.ant-tabs-tab]:border-b-transparent',
     children: (
       <div>
+        <div className="mb-4 space-y-3">
+          <div>
+            <div className="mb-1 text-sm font-medium text-gray-700">请求方法</div>
+            {isEditingBasicInfo ? (
+              <Select
+                value={draftMethod}
+                onChange={(value) => setDraftMethod(value)}
+                className="w-44"
+              >
+                <Option value="GET">GET</Option>
+                <Option value="POST">POST</Option>
+                <Option value="PUT">PUT</Option>
+                <Option value="DELETE">DELETE</Option>
+                <Option value="PATCH">PATCH</Option>
+              </Select>
+            ) : (
+              <div className="h-10 px-3 rounded-md border border-gray-200 bg-gray-50 flex items-center w-44">
+                <span className="text-sm font-semibold tracking-wide text-gray-700">{selectedRequest.method}</span>
+              </div>
+            )}
+          </div>
+          <div>
+            <div className="mb-1 text-sm font-medium text-gray-700">请求路径</div>
+            {isEditingBasicInfo ? (
+              <Input
+                value={draftUrl}
+                onChange={(e) => setDraftUrl(e.target.value)}
+                placeholder="https://api.example.com/users/{id} 或 https://api.example.com/users/:id"
+              />
+            ) : (
+              <div className="h-10 px-3 rounded-md border border-gray-200 bg-gray-50 flex items-center overflow-hidden">
+                <span className="text-sm text-gray-700 truncate" title={selectedRequest.url}>
+                  {selectedRequest.url || '-'}
+                </span>
+              </div>
+            )}
+          </div>
+          <div className="flex items-start gap-2 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-700">
+            <InfoCircleOutlined className="mt-0.5" />
+            <span>
+              Path 参数占位写在 URL 中（如 <code>{'{id}'}</code> 或 <code>:id</code>），在 API 配置中只填写参数名（如 <code>id</code>）。
+            </span>
+          </div>
+        </div>
         <div className="flex items-center justify-between mb-3">
           <div className="text-sm font-semibold text-gray-700">API 配置</div>
-          <Button type="dashed" onClick={handleAddMapping} icon={<PlusOutlined />}>
-            添加映射
-          </Button>
+          {isEditingBasicInfo && (
+            <Button type="dashed" onClick={handleAddMapping} icon={<PlusOutlined />}>
+              添加映射
+            </Button>
+          )}
         </div>
         {(incompleteMappings.length > 0 || pathMappingsMissingPlaceholder.length > 0 || unmappedInputs.length > 0) && (
           <div className="mb-3 space-y-1 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
@@ -470,6 +711,7 @@ export const RequestEditor: React.FC = () => {
                     placeholder="选择入参"
                     value={mapping.inputName || undefined}
                     onChange={(value) => handleMappingChange(index, 'inputName', value)}
+                    disabled={!isEditingBasicInfo}
                     className="w-full"
                   >
                     {selectedRequest.inputFields.map((field, fieldIndex) => (
@@ -483,6 +725,7 @@ export const RequestEditor: React.FC = () => {
                   <Select
                     value={mapping.target}
                     onChange={(value) => handleMappingChange(index, 'target', value)}
+                    disabled={!isEditingBasicInfo}
                     className="w-full"
                   >
                     <Option value="path">Path</Option>
@@ -492,19 +735,28 @@ export const RequestEditor: React.FC = () => {
                 </Col>
                 <Col flex={3}>
                   <Input
-                    placeholder={mapping.target === 'path' ? '路径占位符名，如 id' : mapping.target === 'params' ? 'Query 参数名' : 'Body JSON 路径，如 data.userId'}
+                    placeholder={mapping.target === 'path' ? '路径参数名（仅填 id，不要填 {id} 或 :id）' : mapping.target === 'params' ? 'Query 参数名' : 'Body JSON 路径，如 data.userId'}
                     value={mapping.key}
                     onChange={(e) => handleMappingChange(index, 'key', e.target.value)}
+                    disabled={!isEditingBasicInfo}
                   />
                 </Col>
                 <Col flex={1}>
-                  <Button
-                    type="text"
-                    danger
-                    icon={<DeleteOutlined />}
-                    onClick={() => handleRemoveMapping(index)}
-                    className="hover:bg-red-50"
-                  />
+                  <Popconfirm
+                    title="确认删除该 API 映射？"
+                    okText="删除"
+                    cancelText="取消"
+                    onConfirm={() => handleRemoveMapping(index)}
+                    disabled={!isEditingBasicInfo}
+                  >
+                    <Button
+                      type="text"
+                      danger
+                      icon={<DeleteOutlined />}
+                      disabled={!isEditingBasicInfo}
+                      className="hover:bg-red-50"
+                    />
+                  </Popconfirm>
                 </Col>
               </Row>
             ))}
@@ -515,7 +767,7 @@ export const RequestEditor: React.FC = () => {
   };
 
   const outputFieldsTab = {
-    key: '3',
+    key: 'output',
     label: '出参字段',
     className: '[&_.ant-tabs-tab]:bg-purple-50/50 [&_.ant-tabs-tab-active]:bg-purple-100 [&_.ant-tabs-tab-active]:border-b-[#722ed1] [&_.ant-tabs-tab]:border-b-transparent',
     children: (
@@ -526,99 +778,109 @@ export const RequestEditor: React.FC = () => {
         {selectedRequest.outputFields.map((field, index) => (
           <Row key={index} gutter={8} align="middle" className="p-2 hover:bg-purple-50 rounded transition-colors">
             <Col flex={2}>
-              <Input
-                placeholder="字段名称"
-                value={field.name}
-                onChange={(e) => handleOutputChange(index, 'name', e.target.value)}
-                className="border-purple-200 focus:border-purple-400"
-              />
+              {isEditingBasicInfo ? (
+                <Input
+                  placeholder="字段名称"
+                  value={field.name}
+                  onChange={(e) => handleOutputChange(index, 'name', e.target.value)}
+                  className="border-purple-200 focus:border-purple-400"
+                />
+              ) : (
+                <div className="min-h-8 px-2 py-1 text-sm text-gray-700">
+                  {field.name || '-'}
+                </div>
+              )}
             </Col>
             <Col flex={3}>
-              <Input
-                placeholder="JSON路径 (例: data.userId)"
-                value={field.path}
-                onChange={(e) => handleOutputChange(index, 'path', e.target.value)}
-                className="border-purple-200 focus:border-purple-400"
-              />
+              {isEditingBasicInfo ? (
+                <Input
+                  placeholder="JSON路径 (例: data.userId)"
+                  value={field.path}
+                  onChange={(e) => handleOutputChange(index, 'path', e.target.value)}
+                  className="border-purple-200 focus:border-purple-400"
+                />
+              ) : (
+                <div className="min-h-8 px-2 py-1 text-sm text-gray-700">
+                  {field.path || '-'}
+                </div>
+              )}
             </Col>
             <Col flex={3}>
-              <Input
-                placeholder="描述"
-                value={field.description}
-                onChange={(e) => handleOutputChange(index, 'description', e.target.value)}
-                className="border-purple-200 focus:border-purple-400"
-              />
+              {isEditingBasicInfo ? (
+                <Input
+                  placeholder="描述"
+                  value={field.description}
+                  onChange={(e) => handleOutputChange(index, 'description', e.target.value)}
+                  className="border-purple-200 focus:border-purple-400"
+                />
+              ) : (
+                <div className="min-h-8 px-2 py-1 text-sm text-gray-700">
+                  {field.description || '-'}
+                </div>
+              )}
             </Col>
             <Col flex={1}>
-              <Button
-                type="text"
-                danger
-                icon={<DeleteOutlined />}
-                onClick={() => handleRemoveOutputField(index)}
-                className="hover:bg-red-50"
-              />
+              {isEditingBasicInfo ? (
+                <Popconfirm
+                  title="确认删除该出参字段？"
+                  okText="删除"
+                  cancelText="取消"
+                  onConfirm={() => handleRemoveOutputField(index)}
+                >
+                  <Button
+                    type="text"
+                    danger
+                    icon={<DeleteOutlined />}
+                    className="hover:bg-red-50"
+                  />
+                </Popconfirm>
+              ) : (
+                <div className="min-h-8" />
+              )}
             </Col>
           </Row>
         ))}
-        <Button type="dashed" onClick={handleAddOutputField} icon={<PlusOutlined />} block className="border-purple-300 text-purple-600 hover:border-purple-400 hover:text-purple-700 hover:bg-purple-50">
-          添加出参字段
-        </Button>
+        {isEditingBasicInfo && (
+          <Button type="dashed" onClick={handleAddOutputField} icon={<PlusOutlined />} block className="border-purple-300 text-purple-600 hover:border-purple-400 hover:text-purple-700 hover:bg-purple-50">
+            添加出参字段
+          </Button>
+        )}
       </div>
     ),
   };
 
-  const tabsItems = [inputFieldsTab, apiConfigTab, outputFieldsTab];
+  const tabsItems = [basicInfoTab, inputFieldsTab, apiConfigTab, outputFieldsTab];
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
       <Card className="mb-4">
-        <div className="flex items-center justify-between mb-4">
-          <Space>
-            <Input
-              value={requestName}
-              onChange={(e) => setRequestName(e.target.value)}
-              onPressEnter={handleRenameRequest}
-              onBlur={handleRenameRequest}
-              placeholder="请求名称"
-              className="w-48"
-            />
-          </Space>
-          <Button type="primary" onClick={() => setDrawerOpen(true)}>
-            测试运行
-          </Button>
-        </div>
-        <Row gutter={16} align="middle">
-          <Col span={4}>
-            <Select
-              value={selectedRequest.method}
-              onChange={(value) =>
-                updateRequest(selectedRequest.id, { method: value })
-              }
-              className="w-full"
-            >
-              <Option value="GET">GET</Option>
-              <Option value="POST">POST</Option>
-              <Option value="PUT">PUT</Option>
-              <Option value="DELETE">DELETE</Option>
-              <Option value="PATCH">PATCH</Option>
-            </Select>
-          </Col>
-          <Col span={16}>
-            <Input
-              value={selectedRequest.url}
-              onChange={(e) => updateRequest(selectedRequest.id, { url: e.target.value })}
-              placeholder="https://api.example.com/endpoint"
-              size="large"
-            />
-          </Col>
-          <Col span={4} />
-        </Row>
+        <Tabs
+          items={tabsItems}
+          tabBarExtraContent={{
+            right: (
+              <div className="flex items-center gap-2">
+                {isEditingBasicInfo ? (
+                  <>
+                    <Button onClick={handleCancelEditBasicInfo}>
+                      取消
+                    </Button>
+                    <Button type="primary" onClick={handleSaveBasicInfo}>
+                      保存
+                    </Button>
+                  </>
+                ) : (
+                  <Button type="primary" onClick={handleStartEditBasicInfo}>
+                    编辑
+                  </Button>
+                )}
+                <Button type="primary" onClick={() => setDrawerOpen(true)}>
+                  测试运行
+                </Button>
+              </div>
+            ),
+          }}
+        />
       </Card>
-      <div className="flex-1 flex flex-col gap-4 overflow-hidden">
-        <div className="flex-1 bg-white rounded-lg p-4 overflow-auto min-h-0">
-          <Tabs items={tabsItems} />
-        </div>
-      </div>
       <Drawer
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
@@ -685,7 +947,7 @@ export const RequestEditor: React.FC = () => {
                       <Button
                         size="small"
                         onClick={handleImportOutputFields}
-                        disabled={!parsedResponseData}
+                        disabled={!parsedResponseData || !isEditingBasicInfo}
                       >
                         一键配置出参
                       </Button>

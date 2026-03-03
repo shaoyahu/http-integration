@@ -28,6 +28,7 @@ export interface ApiMapping {
 export interface HttpRequest {
   id: string
   name: string
+  description?: string
   method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'
   url: string
   headers: HttpParam[]
@@ -52,6 +53,7 @@ const DEFAULT_REQUEST_ID = 'default-feishu-callback'
 const DEFAULT_REQUEST: HttpRequest = {
   id: DEFAULT_REQUEST_ID,
   name: '飞书回调示例',
+  description: '',
   method: 'POST',
   url: 'https://open.feishu.cn/anycross/trigger/callback/MDY1NThjOGZlYzE0ZGUxNTNiY2U4N2RkYzQ1YzU0ZmZk',
   headers: [],
@@ -72,6 +74,7 @@ export const useRequestStore = create<RequestStore>((set) => ({
         {
           id,
           name: `请求 ${state.requests.length + 1}`,
+          description: '',
           method: 'GET',
           url: '',
           headers: [],
