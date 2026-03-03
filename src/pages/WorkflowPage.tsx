@@ -1805,6 +1805,10 @@ const handleRunWorkflow = async () => {
                               <div className="text-xs text-gray-500 mb-1">请求方法</div>
                               <Tag color={methodColors[node.method] || 'default'}>{node.method}</Tag>
                             </div>
+                            <div>
+                              <div className="text-xs text-gray-500 mb-1">请求地址</div>
+                              <div className="text-sm text-gray-800 break-all">{node.url || '--'}</div>
+                            </div>
                             <div className="space-y-2">
                               <div className="text-xs text-gray-500">请求参数</div>
                               {node.inputFields && node.inputFields.length > 0 ? (
