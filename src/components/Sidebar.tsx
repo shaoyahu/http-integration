@@ -26,6 +26,7 @@ import {
   useSortable,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import { healthCheck } from '../api/http';
 
 const { Sider } = Layout;
 const { Option } = Select;
@@ -142,6 +143,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ children }) => {
   const listRef = useRef<HTMLDivElement | null>(null);
   const [showTopHint, setShowTopHint] = useState(false);
   const [showBottomHint, setShowBottomHint] = useState(false);
+  const [isDatabaseConnected, setIsDatabaseConnected] = useState(false);
 
   const sensors = useSensors(
     useSensor(PointerSensor),
@@ -205,6 +207,29 @@ export const Sidebar: React.FC<SidebarProps> = ({ children }) => {
     updateScrollHints();
   }, [filteredRequests.length]);
 
+  useEffect(() => {
+    let mounted = true;
+
+    const checkDatabaseStatus = async () => {
+      try {
+        const result = await healthCheck();
+        if (!mounted) return;
+        setIsDatabaseConnected(result?.status === 'ok');
+      } catch (error) {
+        if (!mounted) return;
+        setIsDatabaseConnected(false);
+      }
+    };
+
+    checkDatabaseStatus();
+    const timer = window.setInterval(checkDatabaseStatus, 15000);
+
+    return () => {
+      mounted = false;
+      window.clearInterval(timer);
+    };
+  }, []);
+
   return (
     <Sider
       width={250}
@@ -212,8 +237,11 @@ export const Sidebar: React.FC<SidebarProps> = ({ children }) => {
       className="border-r border-gray-200 flex flex-col overflow-hidden request-sidebar"
       style={{ height: '100vh' }}
     >
-      <div className="h-12 flex items-center justify-end px-4 border-b border-gray-200 flex-shrink-0">
-        <h2 className="text-lg font-semibold text-gray-800 margin-0 text-right">请求管理</h2>
+      <div className="h-12 flex items-center justify-between px-4 border-b border-gray-200 flex-shrink-0">
+        <h2 className="text-lg font-semibold text-gray-800 margin-0">请求管理</h2>
+        <span className="text-xs text-gray-500">
+          {isDatabaseConnected ? '数据库已连接' : '数据库未连接'}
+        </span>
       </div>
       <div className="px-3 py-2 border-b border-gray-200 flex-shrink-0">
         <Select
