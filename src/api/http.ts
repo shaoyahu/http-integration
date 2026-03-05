@@ -1,11 +1,13 @@
 import axios from 'axios';
 import type { HttpRequest } from '../store/requestStore';
+import type { Workflow } from '../store/workflowStore';
 
 const API_BASE_URL = '/api';
 
 export const api = axios.create({
   baseURL: API_BASE_URL,
   timeout: 30000,
+  withCredentials: true,
 });
 
 export interface ProxyRequest {
@@ -31,6 +33,20 @@ export interface RequestStatePayload {
   selectedRequestId: string | null;
 }
 
+export interface WorkflowStatePayload {
+  workflows: Workflow[];
+  selectedWorkflowId: string | null;
+}
+
+export interface AdminStatsPayload {
+  totalRequests: number;
+  totalWorkflows: number;
+  ratio: {
+    requests: number;
+    workflows: number;
+  };
+}
+
 export const fetchRequestState = async (): Promise<RequestStatePayload> => {
   const response = await api.get('/requests-state');
   const data = response.data || {};
@@ -43,4 +59,31 @@ export const fetchRequestState = async (): Promise<RequestStatePayload> => {
 export const saveRequestState = async (payload: RequestStatePayload) => {
   const response = await api.put('/requests-state', payload);
   return response.data;
+};
+
+export const fetchWorkflowState = async (): Promise<WorkflowStatePayload> => {
+  const response = await api.get('/workflows-state');
+  const data = response.data || {};
+  return {
+    workflows: Array.isArray(data.workflows) ? data.workflows : [],
+    selectedWorkflowId: typeof data.selectedWorkflowId === 'string' ? data.selectedWorkflowId : null,
+  };
+};
+
+export const saveWorkflowState = async (payload: WorkflowStatePayload) => {
+  const response = await api.put('/workflows-state', payload);
+  return response.data;
+};
+
+export const fetchAdminStats = async (): Promise<AdminStatsPayload> => {
+  const response = await api.get('/admin/stats');
+  const data = response.data || {};
+  return {
+    totalRequests: typeof data.totalRequests === 'number' ? data.totalRequests : 0,
+    totalWorkflows: typeof data.totalWorkflows === 'number' ? data.totalWorkflows : 0,
+    ratio: {
+      requests: typeof data.ratio?.requests === 'number' ? data.ratio.requests : 0,
+      workflows: typeof data.ratio?.workflows === 'number' ? data.ratio.workflows : 0,
+    },
+  };
 };

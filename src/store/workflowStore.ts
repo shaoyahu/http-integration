@@ -44,6 +44,7 @@ export interface WorkflowRequest {
 interface WorkflowStore {
   workflows: Workflow[]
   selectedWorkflowId: string | null
+  setWorkflowState: (workflows: Workflow[], selectedWorkflowId: string | null) => void
   addWorkflow: () => void
   updateWorkflow: (id: string, updates: Partial<Workflow>) => void
   deleteWorkflow: (id: string) => void
@@ -57,6 +58,13 @@ interface WorkflowStore {
 export const useWorkflowStore = create<WorkflowStore>((set) => ({
   workflows: [],
   selectedWorkflowId: null,
+  setWorkflowState: (workflows, selectedWorkflowId) =>
+    set({
+      workflows: Array.isArray(workflows) ? workflows : [],
+      selectedWorkflowId: selectedWorkflowId && workflows.some((wf) => wf.id === selectedWorkflowId)
+        ? selectedWorkflowId
+        : (workflows[0]?.id || null),
+    }),
   addWorkflow: () =>
     set((state) => {
       const now = Date.now()

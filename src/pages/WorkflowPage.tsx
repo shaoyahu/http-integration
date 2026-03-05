@@ -6,7 +6,7 @@ import { useRequestStore } from '../store/requestStore';
 import Editor from '@monaco-editor/react';
 import { RouteSidebar } from '../components/RouteSidebar';
 import { applyPathMapping, parseBodyValue, setNestedValue } from '../utils/requestPayload';
-import { proxyRequest } from '../api/http';
+import { fetchWorkflowState, proxyRequest, saveWorkflowState } from '../api/http';
 
 const { Sider, Content } = Layout;
 
@@ -495,7 +495,7 @@ const buildFallbackPath = (
 };
 
 export const WorkflowPage: React.FC = () => {
-  const { workflows, selectedWorkflowId, addWorkflow, updateWorkflow, deleteWorkflow, setSelectedWorkflow, removeRequestFromWorkflow, updateWorkflowRequestInputValue } = useWorkflowStore();
+  const { workflows, selectedWorkflowId, setWorkflowState, addWorkflow, updateWorkflow, deleteWorkflow, setSelectedWorkflow, removeRequestFromWorkflow, updateWorkflowRequestInputValue } = useWorkflowStore();
   const { requests } = useRequestStore();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
@@ -530,6 +530,9 @@ export const WorkflowPage: React.FC = () => {
     originOffsetY: number;
   }>({ id: null, startX: 0, startY: 0, offsetX: 0, offsetY: 0, moved: false, mode: null, originOffsetX: 0, originOffsetY: 0 });
   const spaceDownRef = React.useRef(false);
+  const initializedRef = React.useRef(false);
+  const lastSavedRef = React.useRef('');
+  const saveTimerRef = React.useRef<number | null>(null);
 
   const selectedWorkflow = workflows.find((wf) => wf.id === selectedWorkflowId);
   const lastUpdated = selectedWorkflow?.updatedAt || selectedWorkflow?.createdAt;
@@ -537,6 +540,68 @@ export const WorkflowPage: React.FC = () => {
     () => ({ x: canvasSize.width / 2 - TRIGGER_WIDTH / 2, y: 12 }),
     [canvasSize]
   );
+
+  React.useEffect(() => {
+    let cancelled = false;
+    const init = async () => {
+      try {
+        const data = await fetchWorkflowState();
+        if (cancelled) {
+          return;
+        }
+        setWorkflowState(data.workflows, data.selectedWorkflowId);
+      } catch (error) {
+        console.error('Failed to load workflows state from DB:', error);
+      } finally {
+        if (cancelled) {
+          return;
+        }
+        const snapshot = useWorkflowStore.getState();
+        lastSavedRef.current = JSON.stringify({
+          workflows: snapshot.workflows,
+          selectedWorkflowId: snapshot.selectedWorkflowId,
+        });
+        initializedRef.current = true;
+      }
+    };
+    init();
+    return () => {
+      cancelled = true;
+    };
+  }, [setWorkflowState]);
+
+  React.useEffect(() => {
+    const unsubscribe = useWorkflowStore.subscribe((state) => {
+      if (!initializedRef.current) {
+        return;
+      }
+      if (saveTimerRef.current) {
+        window.clearTimeout(saveTimerRef.current);
+      }
+      saveTimerRef.current = window.setTimeout(async () => {
+        const payload = {
+          workflows: state.workflows,
+          selectedWorkflowId: state.selectedWorkflowId,
+        };
+        const serialized = JSON.stringify(payload);
+        if (serialized === lastSavedRef.current) {
+          return;
+        }
+        try {
+          await saveWorkflowState(payload);
+          lastSavedRef.current = serialized;
+        } catch (error) {
+          console.error('Failed to save workflows state to DB:', error);
+        }
+      }, 500);
+    });
+    return () => {
+      unsubscribe();
+      if (saveTimerRef.current) {
+        window.clearTimeout(saveTimerRef.current);
+      }
+    };
+  }, []);
 
   React.useEffect(() => {
     const container = canvasContainerRef.current;
