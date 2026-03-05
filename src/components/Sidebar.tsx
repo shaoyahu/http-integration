@@ -138,7 +138,7 @@ function SortableItem({
   );
 }
 
-const getSaveStatusText = (isLoading: boolean, isSaving: boolean, saveError: string | null, lastSavedAt: number | null) => {
+const getSaveStatusText = (isLoading: boolean, isSaving: boolean, saveError: string | null) => {
   if (isLoading) {
     return '正在加载请求...';
   }
@@ -148,10 +148,7 @@ const getSaveStatusText = (isLoading: boolean, isSaving: boolean, saveError: str
   if (saveError) {
     return `保存失败：${saveError}`;
   }
-  if (lastSavedAt) {
-    return `已保存 ${new Date(lastSavedAt).toLocaleTimeString()}`;
-  }
-  return '已连接数据库';
+  return '已保存';
 };
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -169,6 +166,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [showTopHint, setShowTopHint] = useState(false);
   const [showBottomHint, setShowBottomHint] = useState(false);
   const [isDatabaseConnected, setIsDatabaseConnected] = useState(false);
+  const [showSavedStatus, setShowSavedStatus] = useState(false);
 
   const sensors = useSensors(
     useSensor(PointerSensor),
@@ -255,6 +253,25 @@ export const Sidebar: React.FC<SidebarProps> = ({
     };
   }, []);
 
+  useEffect(() => {
+    if (!lastSavedAt || isLoading || isSaving || saveError) {
+      return;
+    }
+    setShowSavedStatus(true);
+    const timer = window.setTimeout(() => {
+      setShowSavedStatus(false);
+    }, 3000);
+    return () => window.clearTimeout(timer);
+  }, [lastSavedAt, isLoading, isSaving, saveError]);
+
+  const showSaveStatus = isLoading || isSaving || Boolean(saveError) || showSavedStatus;
+  const statusText = showSaveStatus
+    ? getSaveStatusText(isLoading, isSaving, saveError)
+    : (isDatabaseConnected ? '数据库已连接' : '数据库未连接');
+  const statusColor = showSaveStatus
+    ? (saveError ? 'error' : (isLoading || isSaving ? 'processing' : 'success'))
+    : (isDatabaseConnected ? 'success' : 'error');
+
   return (
     <Sider
       width={250}
@@ -264,9 +281,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
     >
       <div className="h-12 flex items-center justify-between px-4 border-b border-gray-200 flex-shrink-0">
         <h2 className="text-lg font-semibold text-gray-800 margin-0">请求管理</h2>
-        <span className="text-xs text-gray-500">
-          {isDatabaseConnected ? '数据库已连接' : '数据库未连接'}
-        </span>
+        <Tag color={statusColor} className="m-0">
+          {statusText}
+        </Tag>
       </div>
       <div className="px-3 py-2 border-b border-gray-200 flex-shrink-0">
         <Select
@@ -306,20 +323,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
           >
             <PlusOutlined />
             <span>添加请求</span>
-          </div>
-        </div>
-        <div
-          className={`mx-3 mt-2 rounded-md border px-2 py-1.5 text-xs transition-all duration-300 ${
-            saveError
-              ? 'border-red-200 bg-red-50 text-red-700'
-              : isSaving || isLoading
-                ? 'border-amber-200 bg-amber-50 text-amber-700'
-                : 'border-emerald-200 bg-emerald-50 text-emerald-700'
-          }`}
-        >
-          <div className="flex items-center gap-2">
-            <span className={`inline-block h-2 w-2 rounded-full ${isSaving || isLoading ? 'bg-amber-500 animate-pulse' : saveError ? 'bg-red-500' : 'bg-emerald-500'}`} />
-            <span className="truncate">{getSaveStatusText(isLoading, isSaving, saveError, lastSavedAt)}</span>
           </div>
         </div>
         <div className="relative flex flex-col flex-1 min-h-0">
