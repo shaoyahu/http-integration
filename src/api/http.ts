@@ -1,4 +1,5 @@
 import axios from 'axios';
+import type { HttpRequest } from '../store/requestStore';
 
 const API_BASE_URL = '/api';
 
@@ -22,5 +23,24 @@ export const proxyRequest = async (proxyReq: ProxyRequest) => {
 
 export const healthCheck = async () => {
   const response = await api.get('/health');
+  return response.data;
+};
+
+export interface RequestStatePayload {
+  requests: HttpRequest[];
+  selectedRequestId: string | null;
+}
+
+export const fetchRequestState = async (): Promise<RequestStatePayload> => {
+  const response = await api.get('/requests-state');
+  const data = response.data || {};
+  return {
+    requests: Array.isArray(data.requests) ? data.requests : [],
+    selectedRequestId: typeof data.selectedRequestId === 'string' ? data.selectedRequestId : null,
+  };
+};
+
+export const saveRequestState = async (payload: RequestStatePayload) => {
+  const response = await api.put('/requests-state', payload);
   return response.data;
 };

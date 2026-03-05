@@ -19,7 +19,6 @@ import {
 } from '@dnd-kit/core';
 import type { DragEndEvent } from '@dnd-kit/core';
 import {
-  arrayMove,
   SortableContext,
   sortableKeyboardCoordinates,
   verticalListSortingStrategy,
@@ -31,7 +30,11 @@ const { Sider } = Layout;
 const { Option } = Select;
 
 interface SidebarProps {
-  children?: React.ReactNode;
+  isLoading: boolean;
+  isSaving: boolean;
+  saveError: string | null;
+  lastSavedAt: number | null;
+  onPersistNow: () => Promise<void>;
 }
 
 const methodColors: Record<string, string> = {
@@ -134,7 +137,29 @@ function SortableItem({
   );
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({ children }) => {
+const getSaveStatusText = (isLoading: boolean, isSaving: boolean, saveError: string | null, lastSavedAt: number | null) => {
+  if (isLoading) {
+    return '正在加载请求...';
+  }
+  if (isSaving) {
+    return '保存中...';
+  }
+  if (saveError) {
+    return `保存失败：${saveError}`;
+  }
+  if (lastSavedAt) {
+    return `已保存 ${new Date(lastSavedAt).toLocaleTimeString()}`;
+  }
+  return '已连接数据库';
+};
+
+export const Sidebar: React.FC<SidebarProps> = ({
+  isLoading,
+  isSaving,
+  saveError,
+  lastSavedAt,
+  onPersistNow,
+}) => {
   const { requests, selectedRequestId, addRequest, deleteRequest, setSelectedRequest, updateRequest, reorderRequests } = useRequestStore();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
@@ -233,15 +258,44 @@ export const Sidebar: React.FC<SidebarProps> = ({ children }) => {
       <div className="flex-1 flex flex-col min-h-0">
         <div className="border-t border-gray-200 flex-shrink-0">
           <div
-            onClick={() => addRequest()}
-            className="flex items-center gap-2 px-4 py-3 cursor-pointer hover:bg-gray-50 text-gray-600 hover:text-gray-800 transition-colors h-12"
+            onClick={async () => {
+              if (isLoading) {
+                return;
+              }
+              addRequest();
+              try {
+                await onPersistNow();
+              } catch (error) {
+                const details = error instanceof Error ? error.message : String(error);
+                message.error(`新增请求已创建，但保存到数据库失败：${details}`);
+              }
+            }}
+            className={`flex items-center gap-2 px-4 py-3 transition-colors h-12 ${
+              isLoading
+                ? 'cursor-not-allowed text-gray-400 bg-gray-50'
+                : 'cursor-pointer hover:bg-gray-50 text-gray-600 hover:text-gray-800'
+            }`}
           >
             <PlusOutlined />
             <span>添加请求</span>
           </div>
         </div>
+        <div
+          className={`mx-3 mt-2 rounded-md border px-2 py-1.5 text-xs transition-all duration-300 ${
+            saveError
+              ? 'border-red-200 bg-red-50 text-red-700'
+              : isSaving || isLoading
+                ? 'border-amber-200 bg-amber-50 text-amber-700'
+                : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            <span className={`inline-block h-2 w-2 rounded-full ${isSaving || isLoading ? 'bg-amber-500 animate-pulse' : saveError ? 'bg-red-500' : 'bg-emerald-500'}`} />
+            <span className="truncate">{getSaveStatusText(isLoading, isSaving, saveError, lastSavedAt)}</span>
+          </div>
+        </div>
         <div className="relative flex flex-col flex-1 min-h-0">
-          {showTopHint && (
+          {showTopHint && !isLoading && (
             <div className="absolute top-0 left-0 right-0 z-10 flex justify-center">
               <button
                 type="button"
@@ -252,7 +306,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ children }) => {
               </button>
             </div>
           )}
-          {showBottomHint && (
+          {showBottomHint && !isLoading && (
             <div className="absolute bottom-0 left-0 right-0 z-10 flex justify-center">
               <button
                 type="button"
@@ -266,38 +320,49 @@ export const Sidebar: React.FC<SidebarProps> = ({ children }) => {
           <div
             ref={listRef}
             onScroll={updateScrollHints}
-            className="request-list overflow-y-auto flex-1 min-h-0 custom-scrollbar"
+            className={`request-list overflow-y-auto flex-1 min-h-0 custom-scrollbar transition-opacity duration-300 ${isLoading ? 'opacity-70' : 'opacity-100'}`}
           >
-            <DndContext
-              sensors={sensors}
-              collisionDetection={closestCenter}
-              onDragEnd={handleDragEnd}
-            >
-              <SortableContext
-                items={filteredRequests.map((req) => req.id)}
-                strategy={verticalListSortingStrategy}
-              >
-                {filteredRequests.map((req) => (
-                  <SortableItem
-                    key={req.id}
-                    id={req.id}
-                    req={req}
-                    selectedRequestId={selectedRequestId}
-                    editingId={editingId}
-                    editingName={editingName}
-                    onRename={handleRename}
-                    onEdit={startEditing}
-                    onDelete={(id) => {
-                      deleteRequest(id);
-                      message.success('请求已删除');
-                    }}
-                    onSelect={setSelectedRequest}
-                    setEditingId={setEditingId}
-                    setEditingName={setEditingName}
-                  />
+            {isLoading ? (
+              <div className="px-3 py-3 space-y-2 animate-pulse">
+                {[1, 2, 3, 4, 5].map((item) => (
+                  <div key={item} className="h-10 rounded-md bg-gray-200/80" />
                 ))}
-              </SortableContext>
-            </DndContext>
+              </div>
+            ) : (
+              <DndContext
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                onDragEnd={handleDragEnd}
+              >
+                <SortableContext
+                  items={filteredRequests.map((req) => req.id)}
+                  strategy={verticalListSortingStrategy}
+                >
+                  {filteredRequests.map((req) => (
+                    <SortableItem
+                      key={req.id}
+                      id={req.id}
+                      req={req}
+                      selectedRequestId={selectedRequestId}
+                      editingId={editingId}
+                      editingName={editingName}
+                      onRename={handleRename}
+                      onEdit={startEditing}
+                      onDelete={(id) => {
+                        deleteRequest(id);
+                        message.success('请求已删除');
+                      }}
+                      onSelect={setSelectedRequest}
+                      setEditingId={setEditingId}
+                      setEditingName={setEditingName}
+                    />
+                  ))}
+                  {filteredRequests.length === 0 && (
+                    <div className="px-4 py-6 text-sm text-gray-500">暂无请求，点击“添加请求”开始。</div>
+                  )}
+                </SortableContext>
+              </DndContext>
+            )}
           </div>
         </div>
       </div>

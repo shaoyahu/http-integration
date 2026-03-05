@@ -45,6 +45,7 @@ interface RequestStore {
   updateRequest: (id: string, updates: Partial<HttpRequest>) => void
   deleteRequest: (id: string) => void
   reorderRequests: (oldIndex: number, newIndex: number) => void
+  setRequestsState: (requests: HttpRequest[], selectedRequestId: string | null) => void
   selectedRequestId: string | null
   setSelectedRequest: (id: string | null) => void
 }
@@ -64,28 +65,44 @@ const DEFAULT_REQUEST: HttpRequest = {
   apiMappings: [],
 }
 
+const createRequestTemplate = (index: number): HttpRequest => ({
+  id: Date.now().toString(),
+  name: `请求 ${index}`,
+  description: '',
+  method: 'GET',
+  url: '',
+  headers: [],
+  params: [],
+  body: JSON.stringify({}, null, 2),
+  inputFields: [],
+  outputFields: [],
+  apiMappings: [],
+})
+
+const normalizeRequest = (req: Partial<HttpRequest>, fallbackIndex: number): HttpRequest => ({
+  id: req.id || `${Date.now()}-${fallbackIndex}`,
+  name: req.name || `请求 ${fallbackIndex + 1}`,
+  description: req.description || '',
+  method: req.method || 'GET',
+  url: req.url || '',
+  headers: Array.isArray(req.headers) ? req.headers : [],
+  params: Array.isArray(req.params) ? req.params : [],
+  body: typeof req.body === 'string' ? req.body : JSON.stringify({}, null, 2),
+  inputFields: Array.isArray(req.inputFields) ? req.inputFields : [],
+  outputFields: Array.isArray(req.outputFields) ? req.outputFields : [],
+  apiMappings: Array.isArray(req.apiMappings) ? req.apiMappings : [],
+})
+
 export const useRequestStore = create<RequestStore>((set) => ({
   requests: [DEFAULT_REQUEST],
   addRequest: () => set((state) => {
-    const id = Date.now().toString();
+    const next = createRequestTemplate(state.requests.length + 1)
     return {
       requests: [
         ...state.requests,
-        {
-          id,
-          name: `请求 ${state.requests.length + 1}`,
-          description: '',
-          method: 'GET',
-          url: '',
-          headers: [],
-          params: [],
-          body: JSON.stringify({}, null, 2),
-          inputFields: [],
-          outputFields: [],
-          apiMappings: [],
-        },
+        next,
       ],
-      selectedRequestId: id,
+      selectedRequestId: next.id,
     };
   }),
   updateRequest: (id, updates) =>
@@ -105,6 +122,19 @@ export const useRequestStore = create<RequestStore>((set) => ({
       const [movedItem] = newRequests.splice(oldIndex, 1);
       newRequests.splice(newIndex, 0, movedItem);
       return { requests: newRequests };
+    }),
+  setRequestsState: (requests, selectedRequestId) =>
+    set(() => {
+      const normalizedRequests = (Array.isArray(requests) ? requests : [])
+        .map((req, index) => normalizeRequest(req, index));
+      const nextRequests = normalizedRequests.length > 0 ? normalizedRequests : [DEFAULT_REQUEST];
+      const nextSelectedRequestId = selectedRequestId && nextRequests.some((req) => req.id === selectedRequestId)
+        ? selectedRequestId
+        : nextRequests[0]?.id || null;
+      return {
+        requests: nextRequests,
+        selectedRequestId: nextSelectedRequestId,
+      };
     }),
   selectedRequestId: DEFAULT_REQUEST_ID,
   setSelectedRequest: (id) => set({ selectedRequestId: id }),
