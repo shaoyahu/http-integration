@@ -1,12 +1,13 @@
-import React, { useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { Layout, Button, Input, List, Space, Popconfirm, message, Empty, Tag, Tooltip, Dropdown, Drawer } from 'antd';
 import { PlayCircleOutlined, DeleteOutlined, EditOutlined, ImportOutlined, LeftOutlined, RightOutlined, PlusOutlined, MenuFoldOutlined, MenuUnfoldOutlined } from '@ant-design/icons';
+import axios from 'axios';
 import { useWorkflowStore } from '../store/workflowStore';
 import { useRequestStore } from '../store/requestStore';
 import Editor from '@monaco-editor/react';
 import { RouteSidebar } from '../components/RouteSidebar';
 import { applyPathMapping, parseBodyValue, setNestedValue } from '../utils/requestPayload';
-import { fetchWorkflowState, proxyRequest, saveWorkflowState } from '../api/http';
+import { fetchWorkflowState, healthCheck, proxyRequest, saveWorkflowState } from '../api/http';
 
 const { Sider, Content } = Layout;
 
@@ -44,6 +45,28 @@ const formatResponseData = (data: any): string => {
   }
 
   return String(data);
+};
+
+const getErrorMessage = (error: unknown) => {
+  if (axios.isAxiosError(error)) {
+    const status = error.response?.status;
+    const details = error.response?.data?.details || error.response?.data?.error || error.message;
+    return status ? `HTTP ${status}: ${details}` : details;
+  }
+  return error instanceof Error ? error.message : String(error);
+};
+
+const getSaveStatusText = (isLoading: boolean, isSaving: boolean, saveError: string | null) => {
+  if (isLoading) {
+    return '正在加载工作流...';
+  }
+  if (isSaving) {
+    return '保存中...';
+  }
+  if (saveError) {
+    return `保存失败：${saveError}`;
+  }
+  return '已保存';
 };
 
 const buildCurl = (url: string, method: string, params: Record<string, string>, body?: any) => {
@@ -514,6 +537,12 @@ export const WorkflowPage: React.FC = () => {
   const [spaceDown, setSpaceDown] = useState(false);
   const [nodeSearch, setNodeSearch] = useState('');
   const [workflowSiderCollapsed, setWorkflowSiderCollapsed] = useState(false);
+  const [isLoadingState, setIsLoadingState] = useState(true);
+  const [isSavingState, setIsSavingState] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+  const [isDatabaseConnected, setIsDatabaseConnected] = useState(false);
+  const [showSavedStatus, setShowSavedStatus] = useState(false);
   const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
   const canvasContainerRef = React.useRef<HTMLDivElement | null>(null);
   const addPanelRef = React.useRef<HTMLDivElement | null>(null);
@@ -533,6 +562,7 @@ export const WorkflowPage: React.FC = () => {
   const initializedRef = React.useRef(false);
   const lastSavedRef = React.useRef('');
   const saveTimerRef = React.useRef<number | null>(null);
+  const latestSaveRequestIdRef = React.useRef(0);
 
   const selectedWorkflow = workflows.find((wf) => wf.id === selectedWorkflowId);
   const lastUpdated = selectedWorkflow?.updatedAt || selectedWorkflow?.createdAt;
@@ -541,17 +571,58 @@ export const WorkflowPage: React.FC = () => {
     [canvasSize]
   );
 
+  const showSaveStatus = isLoadingState || isSavingState || Boolean(saveError) || showSavedStatus;
+  const statusText = showSaveStatus
+    ? getSaveStatusText(isLoadingState, isSavingState, saveError)
+    : (isDatabaseConnected ? '数据库已连接' : '数据库未连接');
+  const statusColor = showSaveStatus
+    ? (saveError ? 'error' : (isLoadingState || isSavingState ? 'processing' : 'success'))
+    : (isDatabaseConnected ? 'success' : 'error');
+
+  const persistWorkflowState = useCallback(
+    async (payload: { workflows: typeof workflows; selectedWorkflowId: string | null }) => {
+      const serialized = JSON.stringify(payload);
+      if (serialized === lastSavedRef.current) {
+        return;
+      }
+
+      const requestId = latestSaveRequestIdRef.current + 1;
+      latestSaveRequestIdRef.current = requestId;
+      setIsSavingState(true);
+      setSaveError(null);
+
+      try {
+        await saveWorkflowState(payload);
+        lastSavedRef.current = serialized;
+        setLastSavedAt(Date.now());
+      } catch (error) {
+        const details = getErrorMessage(error);
+        setSaveError(details);
+        throw new Error(details);
+      } finally {
+        if (latestSaveRequestIdRef.current === requestId) {
+          setIsSavingState(false);
+        }
+      }
+    },
+    []
+  );
+
   React.useEffect(() => {
     let cancelled = false;
     const init = async () => {
+      setIsLoadingState(true);
       try {
         const data = await fetchWorkflowState();
         if (cancelled) {
           return;
         }
         setWorkflowState(data.workflows, data.selectedWorkflowId);
+        setSaveError(null);
       } catch (error) {
-        console.error('Failed to load workflows state from DB:', error);
+        const details = getErrorMessage(error);
+        setSaveError(details);
+        console.error('Failed to load workflows state from DB:', details);
       } finally {
         if (cancelled) {
           return;
@@ -562,6 +633,7 @@ export const WorkflowPage: React.FC = () => {
           selectedWorkflowId: snapshot.selectedWorkflowId,
         });
         initializedRef.current = true;
+        setIsLoadingState(false);
       }
     };
     init();
@@ -583,15 +655,11 @@ export const WorkflowPage: React.FC = () => {
           workflows: state.workflows,
           selectedWorkflowId: state.selectedWorkflowId,
         };
-        const serialized = JSON.stringify(payload);
-        if (serialized === lastSavedRef.current) {
-          return;
-        }
         try {
-          await saveWorkflowState(payload);
-          lastSavedRef.current = serialized;
+          await persistWorkflowState(payload);
         } catch (error) {
-          console.error('Failed to save workflows state to DB:', error);
+          const details = getErrorMessage(error);
+          console.error('Failed to save workflows state to DB:', details);
         }
       }, 500);
     });
@@ -601,7 +669,42 @@ export const WorkflowPage: React.FC = () => {
         window.clearTimeout(saveTimerRef.current);
       }
     };
+  }, [persistWorkflowState]);
+
+  React.useEffect(() => {
+    let mounted = true;
+    const checkDatabaseStatus = async () => {
+      try {
+        const result = await healthCheck();
+        if (!mounted) {
+          return;
+        }
+        setIsDatabaseConnected(result?.status === 'ok');
+      } catch {
+        if (!mounted) {
+          return;
+        }
+        setIsDatabaseConnected(false);
+      }
+    };
+    checkDatabaseStatus();
+    const timer = window.setInterval(checkDatabaseStatus, 15000);
+    return () => {
+      mounted = false;
+      window.clearInterval(timer);
+    };
   }, []);
+
+  React.useEffect(() => {
+    if (!lastSavedAt || isLoadingState || isSavingState || saveError) {
+      return;
+    }
+    setShowSavedStatus(true);
+    const timer = window.setTimeout(() => {
+      setShowSavedStatus(false);
+    }, 3000);
+    return () => window.clearTimeout(timer);
+  }, [lastSavedAt, isLoadingState, isSavingState, saveError]);
 
   React.useEffect(() => {
     const container = canvasContainerRef.current;
@@ -1533,31 +1636,42 @@ const handleRunWorkflow = async () => {
   return (
     <Layout className="min-h-screen bg-white">
       <RouteSidebar />
-      <Sider width={250} theme="light" collapsed={workflowSiderCollapsed} collapsedWidth={0} className="border-r border-gray-200">
+      <Sider width={250} theme="light" collapsed={workflowSiderCollapsed} collapsedWidth={0} className="border-r border-gray-200 relative" style={{ overflow: 'visible' }}>
         {!workflowSiderCollapsed && (
           <>
             <div className="h-12 flex items-center justify-between px-4 border-b border-gray-200">
               <h2 className="text-lg font-semibold text-gray-800 margin-0">工作流</h2>
-              <Button
-                type="text"
-                size="small"
-                icon={<MenuFoldOutlined />}
-                onClick={() => setWorkflowSiderCollapsed(true)}
-                className="text-gray-500 hover:text-gray-700"
-              />
+              <Tag color={statusColor} className="m-0">
+                {statusText}
+              </Tag>
             </div>
           <div className="flex-1 flex flex-col overflow-hidden">
             <div className="border-t border-gray-200">
               <div
-                onClick={() => addWorkflow()}
-                className="flex items-center gap-2 px-4 py-3 cursor-pointer hover:bg-gray-50 text-gray-600 hover:text-gray-800 transition-colors"
+                onClick={() => {
+                  if (isLoadingState) {
+                    return;
+                  }
+                  addWorkflow();
+                }}
+                className={`flex items-center gap-2 px-4 py-3 transition-colors ${
+                  isLoadingState
+                    ? 'cursor-not-allowed text-gray-400 bg-gray-50'
+                    : 'cursor-pointer hover:bg-gray-50 text-gray-600 hover:text-gray-800'
+                }`}
               >
                 <PlusOutlined />
                 <span>添加工作流</span>
               </div>
             </div>
             <div className="overflow-y-auto flex-1">
-              {workflows.map((wf) => (
+              {isLoadingState ? (
+                <div className="px-3 py-3 space-y-2 animate-pulse">
+                  {[1, 2, 3, 4, 5].map((item) => (
+                    <div key={item} className="h-10 rounded-md bg-gray-200/80" />
+                  ))}
+                </div>
+              ) : workflows.map((wf) => (
                 <div
                   key={wf.id}
                   onClick={() => setSelectedWorkflow(wf.id)}
@@ -1605,25 +1719,41 @@ const handleRunWorkflow = async () => {
               ))}
             </div>
           </div>
+          <Button
+            type="primary"
+            shape="circle"
+            size="middle"
+            icon={<MenuFoldOutlined />}
+            onClick={() => setWorkflowSiderCollapsed(true)}
+            className="!absolute !right-2 !top-1/2 !-translate-y-1/2 shadow-md border-2 border-white"
+          />
           </>
         )}
       </Sider>
 
-      <Content className="flex-1 bg-[#f5f5f5] overflow-hidden !p-0">
+      <Content className="flex-1 bg-[#f5f5f5] overflow-hidden !p-0 !relative">
+        {workflowSiderCollapsed && (
+          <Button
+            type="primary"
+            shape="circle"
+            size="middle"
+            icon={<MenuUnfoldOutlined />}
+            onClick={() => setWorkflowSiderCollapsed(false)}
+            className="!absolute !left-2 !top-1/2 !-translate-y-1/2 z-30 shadow-md border-2 border-white"
+          />
+        )}
         <div className="h-full flex flex-col">
-          {selectedWorkflow ? (
+          {isLoadingState ? (
+            <div className="h-full overflow-auto p-4">
+              <div className="space-y-4 animate-pulse">
+                <div className="h-12 rounded-lg bg-gray-200/80" />
+                <div className="h-[520px] rounded-lg bg-white border border-gray-200" />
+              </div>
+            </div>
+          ) : selectedWorkflow ? (
             <>
               <div className="bg-white border-b border-gray-200 px-4 h-14 flex items-center justify-between sticky top-0 z-20">
                 <div className="flex items-center gap-3 min-w-0">
-                  {workflowSiderCollapsed && (
-                    <Button
-                      type="text"
-                      size="small"
-                      icon={<MenuUnfoldOutlined />}
-                      onClick={() => setWorkflowSiderCollapsed(false)}
-                      className="text-gray-500 hover:text-gray-700"
-                    />
-                  )}
                   <div>
                     <div className="text-base font-semibold text-gray-800 truncate">{selectedWorkflow.name}</div>
                     <div className="text-xs text-gray-500">

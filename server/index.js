@@ -170,15 +170,33 @@ const normalizeRequest = (req = {}, index = 0) => ({
   inputFields: Array.isArray(req.inputFields) ? req.inputFields : [],
   outputFields: Array.isArray(req.outputFields) ? req.outputFields : [],
   apiMappings: Array.isArray(req.apiMappings) ? req.apiMappings : [],
+  folderId: typeof req.folderId === 'string' && req.folderId.trim() ? req.folderId : null,
+});
+
+const normalizeRequestFolder = (folder = {}, index = 0) => ({
+  id: typeof folder.id === 'string' && folder.id.trim() ? folder.id : `folder-${Date.now()}-${index}`,
+  name: typeof folder.name === 'string' && folder.name.trim() ? folder.name : `文件夹 ${index + 1}`,
+  expanded: folder.expanded !== false,
 });
 
 const normalizeRequestState = (payload = {}) => {
-  const requests = Array.isArray(payload.requests) ? payload.requests.map((req, index) => normalizeRequest(req, index)) : [];
+  const folders = Array.isArray(payload.folders) ? payload.folders.map((folder, index) => normalizeRequestFolder(folder, index)) : [];
+  const folderIds = new Set(folders.map((folder) => folder.id));
+  const requests = Array.isArray(payload.requests)
+    ? payload.requests.map((req, index) => {
+      const normalized = normalizeRequest(req, index);
+      return {
+        ...normalized,
+        folderId: normalized.folderId && folderIds.has(normalized.folderId) ? normalized.folderId : null,
+      };
+    })
+    : [];
   const selectedRequestId = typeof payload.selectedRequestId === 'string' ? payload.selectedRequestId : null;
   const safeSelectedRequestId = selectedRequestId && requests.some((req) => req.id === selectedRequestId)
     ? selectedRequestId
     : (requests[0]?.id || null);
   return {
+    folders,
     requests,
     selectedRequestId: safeSelectedRequestId,
   };
@@ -463,10 +481,10 @@ app.get('/api/requests-state', requireAuth, async (req, res) => {
     const existing = await db.collection(REQUEST_STATE_COLLECTION).findOne({ _id: userDocId });
     const fallbackExisting = existing || await db.collection(REQUEST_STATE_COLLECTION).findOne({ _id: REQUEST_STATE_DOC_ID });
     if (!fallbackExisting) {
-      return res.json({ requests: [], selectedRequestId: null });
+      return res.json({ requests: [], folders: [], selectedRequestId: null });
     }
-    const { requests, selectedRequestId } = normalizeRequestState(fallbackExisting);
-    return res.json({ requests, selectedRequestId });
+    const { requests, folders, selectedRequestId } = normalizeRequestState(fallbackExisting);
+    return res.json({ requests, folders, selectedRequestId });
   } catch (error) {
     res.status(500).json({
       error: 'Failed to load request state',

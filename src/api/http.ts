@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { HttpRequest } from '../store/requestStore';
+import type { HttpRequest, RequestFolder } from '../store/requestStore';
 import type { Workflow } from '../store/workflowStore';
 
 const API_BASE_URL = '/api';
@@ -30,6 +30,7 @@ export const healthCheck = async () => {
 
 export interface RequestStatePayload {
   requests: HttpRequest[];
+  folders: RequestFolder[];
   selectedRequestId: string | null;
 }
 
@@ -52,6 +53,7 @@ export const fetchRequestState = async (): Promise<RequestStatePayload> => {
   const data = response.data || {};
   return {
     requests: Array.isArray(data.requests) ? data.requests : [],
+    folders: Array.isArray(data.folders) ? data.folders : [],
     selectedRequestId: typeof data.selectedRequestId === 'string' ? data.selectedRequestId : null,
   };
 };

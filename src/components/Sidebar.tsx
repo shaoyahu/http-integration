@@ -1,14 +1,20 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Layout, Popconfirm, message, Input, Tag, Select, Button } from 'antd';
+import { Layout, Popconfirm, message, Input, Tag, Select, Button, Dropdown } from 'antd';
+import type { MenuProps } from 'antd';
 import {
   PlusOutlined,
   DeleteOutlined,
   EditOutlined,
+  FolderAddOutlined,
+  FolderOpenOutlined,
+  FolderOutlined,
   HolderOutlined,
+  RightOutlined,
+  DownOutlined,
   VerticalAlignTopOutlined,
   VerticalAlignBottomOutlined,
 } from '@ant-design/icons';
-import { useRequestStore } from '../store/requestStore';
+import { useRequestStore, type HttpRequest } from '../store/requestStore';
 import {
   DndContext,
   closestCenter,
@@ -48,7 +54,8 @@ const methodColors: Record<string, string> = {
 
 interface SortableItemProps {
   id: string;
-  req: any;
+  req: HttpRequest;
+  folderMenuItems: MenuProps['items'];
   selectedRequestId: string | null;
   editingId: string | null;
   editingName: string;
@@ -56,6 +63,7 @@ interface SortableItemProps {
   onEdit: (e: React.MouseEvent, req: any) => void;
   onDelete: (id: string) => void;
   onSelect: (id: string) => void;
+  onMoveToFolder: (requestId: string, folderId: string | null) => void;
   setEditingId: (id: string | null) => void;
   setEditingName: (name: string) => void;
 }
@@ -63,6 +71,7 @@ interface SortableItemProps {
 function SortableItem({
   id,
   req,
+  folderMenuItems,
   selectedRequestId,
   editingId,
   editingName,
@@ -70,6 +79,7 @@ function SortableItem({
   onEdit,
   onDelete,
   onSelect,
+  onMoveToFolder,
   setEditingId,
   setEditingName,
 }: SortableItemProps) {
@@ -92,11 +102,11 @@ function SortableItem({
     <div
       ref={setNodeRef}
       style={style}
-      className={`px-2 my-2 cursor-pointer hover:bg-blue-50 ${selectedRequestId === req.id ? 'bg-blue-100 border-l-4 border-blue-500' : ''}`}
+      className={`px-4 h-14 flex items-center cursor-pointer hover:bg-blue-50 ${selectedRequestId === req.id ? 'bg-blue-100 border-l-4 border-blue-500' : ''}`}
       onClick={() => onSelect(req.id)}
     >
-      <div className="flex items-center justify-between w-full h-10">
-        <div className="flex items-center gap-2 min-w-0 flex-1 h-full">
+      <div className="flex items-center justify-between w-full">
+        <div className="flex items-center gap-2 min-w-0 flex-1">
           <div {...attributes} {...listeners} className="cursor-grab flex-shrink-0">
             <HolderOutlined className="text-gray-400 hover:text-gray-600" />
           </div>
@@ -111,14 +121,26 @@ function SortableItem({
               onPressEnter={() => onRename(req.id, editingName)}
               onBlur={() => onRename(req.id, editingName)}
               autoFocus
-              className="flex-1 h-full"
+              className="flex-1"
               onClick={(e) => e.stopPropagation()}
             />
           ) : (
-            <span className="truncate flex-1 h-full flex items-center">{req.name}</span>
+            <span className="truncate flex-1">{req.name}</span>
           )}
         </div>
-        <div className="flex items-center flex-shrink-0 h-full" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+          <Dropdown
+            trigger={['click']}
+            menu={{
+              items: folderMenuItems,
+              onClick: ({ key }) => onMoveToFolder(req.id, key === '__ungrouped' ? null : String(key)),
+            }}
+          >
+            <FolderOpenOutlined
+              className="ml-2 text-gray-400 hover:text-blue-500"
+              onClick={(e) => e.stopPropagation()}
+            />
+          </Dropdown>
           <EditOutlined
             className="ml-2 text-gray-400 hover:text-blue-500"
             onClick={(e) => onEdit(e, req)}
@@ -158,9 +180,25 @@ export const Sidebar: React.FC<SidebarProps> = ({
   lastSavedAt,
   onPersistNow,
 }) => {
-  const { requests, selectedRequestId, addRequest, deleteRequest, setSelectedRequest, updateRequest, reorderRequests } = useRequestStore();
+  const {
+    requests,
+    folders,
+    selectedRequestId,
+    addRequest,
+    updateRequest,
+    deleteRequest,
+    reorderRequests,
+    addFolder,
+    updateFolder,
+    deleteFolder,
+    toggleFolderExpanded,
+    moveRequestToFolder,
+    setSelectedRequest,
+  } = useRequestStore();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
+  const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
+  const [editingFolderName, setEditingFolderName] = useState('');
   const [filterMethod, setFilterMethod] = useState<string>('all');
   const listRef = useRef<HTMLDivElement | null>(null);
   const [showTopHint, setShowTopHint] = useState(false);
@@ -180,6 +218,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
     [filterMethod, requests]
   );
 
+  const folderMenuItems = useMemo<MenuProps['items']>(() => ([
+    { key: '__ungrouped', label: '移到未分组' },
+    ...folders.map((folder) => ({
+      key: folder.id,
+      label: folder.name,
+    })),
+  ]), [folders]);
+
   const handleRename = (id: string, newName: string) => {
     if (newName.trim()) {
       updateRequest(id, { name: newName.trim() });
@@ -188,22 +234,83 @@ export const Sidebar: React.FC<SidebarProps> = ({
     setEditingId(null);
   };
 
-  const startEditing = (e: React.MouseEvent, req: any) => {
+  const startEditing = (e: React.MouseEvent, req: HttpRequest) => {
     e.stopPropagation();
     setEditingId(req.id);
     setEditingName(req.name);
   };
 
+  const startFolderEditing = (e: React.MouseEvent, folderId: string, folderName: string) => {
+    e.stopPropagation();
+    setEditingFolderId(folderId);
+    setEditingFolderName(folderName);
+  };
+
+  const handleFolderRename = (id: string, newName: string) => {
+    if (newName.trim()) {
+      updateFolder(id, { name: newName.trim() });
+      message.success('文件夹已重命名');
+    }
+    setEditingFolderId(null);
+  };
+
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
+    if (!over || active.id === over.id) {
+      return;
+    }
 
-    if (active.id !== over?.id) {
-      const oldIndex = filteredRequests.findIndex((req) => req.id === active.id);
-      const newIndex = filteredRequests.findIndex((req) => req.id === over?.id);
+    const activeReq = requests.find((req) => req.id === active.id);
+    const overReq = requests.find((req) => req.id === over.id);
+    if (!activeReq || !overReq) {
+      return;
+    }
+    if ((activeReq.folderId || null) !== (overReq.folderId || null)) {
+      return;
+    }
 
-      if (oldIndex !== -1 && newIndex !== -1) {
-        reorderRequests(oldIndex, newIndex);
-      }
+    const oldIndex = requests.findIndex((req) => req.id === activeReq.id);
+    const newIndex = requests.findIndex((req) => req.id === overReq.id);
+    if (oldIndex !== -1 && newIndex !== -1) {
+      reorderRequests(oldIndex, newIndex);
+    }
+  };
+
+  const handleMoveRequestToFolder = (requestId: string, folderId: string | null) => {
+    moveRequestToFolder(requestId, folderId);
+    message.success(folderId ? '请求已移动到文件夹' : '请求已移动到未分组');
+  };
+
+  const getFolderRequests = (folderId: string) =>
+    filteredRequests.filter((req) => req.folderId === folderId);
+
+  const ungroupedRequests = filteredRequests.filter((req) => !req.folderId || !folders.some((folder) => folder.id === req.folderId));
+
+  const hasAnyVisibleRequest = ungroupedRequests.length > 0 || folders.some((folder) => getFolderRequests(folder.id).length > 0);
+
+  const addRequestAndPersist = async () => {
+    if (isLoading) {
+      return;
+    }
+    addRequest(null);
+    try {
+      await onPersistNow();
+    } catch (error) {
+      const details = error instanceof Error ? error.message : String(error);
+      message.error(`新增请求已创建，但保存到数据库失败：${details}`);
+    }
+  };
+
+  const addFolderAndPersist = async () => {
+    if (isLoading) {
+      return;
+    }
+    addFolder();
+    try {
+      await onPersistNow();
+    } catch (error) {
+      const details = error instanceof Error ? error.message : String(error);
+      message.error(`新增文件夹已创建，但保存到数据库失败：${details}`);
     }
   };
 
@@ -228,7 +335,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   useEffect(() => {
     updateScrollHints();
-  }, [filteredRequests.length]);
+  }, [filteredRequests.length, folders.length]);
 
   useEffect(() => {
     let mounted = true;
@@ -303,18 +410,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <div className="flex-1 flex flex-col min-h-0">
         <div className="border-t border-gray-200 flex-shrink-0">
           <div
-            onClick={async () => {
-              if (isLoading) {
-                return;
-              }
-              addRequest();
-              try {
-                await onPersistNow();
-              } catch (error) {
-                const details = error instanceof Error ? error.message : String(error);
-                message.error(`新增请求已创建，但保存到数据库失败：${details}`);
-              }
-            }}
+            onClick={addRequestAndPersist}
             className={`flex items-center gap-2 px-4 py-3 transition-colors h-12 ${
               isLoading
                 ? 'cursor-not-allowed text-gray-400 bg-gray-50'
@@ -323,6 +419,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
           >
             <PlusOutlined />
             <span>添加请求</span>
+          </div>
+          <div
+            onClick={addFolderAndPersist}
+            className={`flex items-center gap-2 px-4 py-3 transition-colors h-12 border-t border-gray-100 ${
+              isLoading
+                ? 'cursor-not-allowed text-gray-400 bg-gray-50'
+                : 'cursor-pointer hover:bg-gray-50 text-gray-600 hover:text-gray-800'
+            }`}
+          >
+            <FolderAddOutlined />
+            <span>添加文件夹</span>
           </div>
         </div>
         <div className="relative flex flex-col flex-1 min-h-0">
@@ -365,33 +472,133 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 collisionDetection={closestCenter}
                 onDragEnd={handleDragEnd}
               >
-                <SortableContext
-                  items={filteredRequests.map((req) => req.id)}
-                  strategy={verticalListSortingStrategy}
-                >
-                  {filteredRequests.map((req) => (
-                    <SortableItem
-                      key={req.id}
-                      id={req.id}
-                      req={req}
-                      selectedRequestId={selectedRequestId}
-                      editingId={editingId}
-                      editingName={editingName}
-                      onRename={handleRename}
-                      onEdit={startEditing}
-                      onDelete={(id) => {
-                        deleteRequest(id);
-                        message.success('请求已删除');
-                      }}
-                      onSelect={setSelectedRequest}
-                      setEditingId={setEditingId}
-                      setEditingName={setEditingName}
-                    />
-                  ))}
-                  {filteredRequests.length === 0 && (
-                    <div className="px-4 py-6 text-sm text-gray-500">暂无请求，点击“添加请求”开始。</div>
-                  )}
-                </SortableContext>
+                {ungroupedRequests.length > 0 && (
+                  <SortableContext
+                    items={ungroupedRequests.map((req) => req.id)}
+                    strategy={verticalListSortingStrategy}
+                  >
+                    {ungroupedRequests.map((req) => (
+                      <SortableItem
+                        key={req.id}
+                        id={req.id}
+                        req={req}
+                        folderMenuItems={folderMenuItems}
+                        selectedRequestId={selectedRequestId}
+                        editingId={editingId}
+                        editingName={editingName}
+                        onRename={handleRename}
+                        onEdit={startEditing}
+                        onDelete={(id) => {
+                          deleteRequest(id);
+                          message.success('请求已删除');
+                        }}
+                        onSelect={setSelectedRequest}
+                        onMoveToFolder={handleMoveRequestToFolder}
+                        setEditingId={setEditingId}
+                        setEditingName={setEditingName}
+                      />
+                    ))}
+                  </SortableContext>
+                )}
+
+                {folders.map((folder) => {
+                  const folderRequests = getFolderRequests(folder.id);
+                  const requestCount = folderRequests.length;
+                  return (
+                    <div key={folder.id}>
+                      <div
+                        className="px-4 h-12 flex items-center justify-between cursor-pointer hover:bg-gray-50 border-t border-gray-100"
+                        onClick={() => toggleFolderExpanded(folder.id)}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          {folder.expanded ? (
+                            <DownOutlined className="text-xs text-gray-500" />
+                          ) : (
+                            <RightOutlined className="text-xs text-gray-500" />
+                          )}
+                          {folder.expanded ? (
+                            <FolderOpenOutlined className="text-amber-500" />
+                          ) : (
+                            <FolderOutlined className="text-amber-500" />
+                          )}
+                          {editingFolderId === folder.id ? (
+                            <Input
+                              size="small"
+                              value={editingFolderName}
+                              onChange={(e) => setEditingFolderName(e.target.value)}
+                              onPressEnter={() => handleFolderRename(folder.id, editingFolderName)}
+                              onBlur={() => handleFolderRename(folder.id, editingFolderName)}
+                              autoFocus
+                              className="w-[120px]"
+                              onClick={(e) => e.stopPropagation()}
+                            />
+                          ) : (
+                            <span className="truncate text-sm font-medium text-gray-700">{folder.name}</span>
+                          )}
+                          <span className="text-xs text-gray-400">{requestCount}</span>
+                        </div>
+                        <div className="flex items-center gap-2 text-gray-400" onClick={(e) => e.stopPropagation()}>
+                          <EditOutlined
+                            className="hover:text-blue-500"
+                            onClick={(e) => startFolderEditing(e, folder.id, folder.name)}
+                          />
+                          <Popconfirm
+                            title="删除文件夹"
+                            description="删除后，文件夹内请求将移到未分组。"
+                            onConfirm={() => {
+                              deleteFolder(folder.id);
+                              message.success('文件夹已删除');
+                            }}
+                            okText="确定"
+                            cancelText="取消"
+                          >
+                            <DeleteOutlined className="hover:text-red-500" />
+                          </Popconfirm>
+                        </div>
+                      </div>
+                      {folder.expanded && (
+                        <>
+                          {requestCount > 0 ? (
+                            <div className="ml-4 border-l border-gray-200">
+                              <SortableContext
+                                items={folderRequests.map((req) => req.id)}
+                                strategy={verticalListSortingStrategy}
+                              >
+                                {folderRequests.map((req) => (
+                                  <SortableItem
+                                    key={req.id}
+                                    id={req.id}
+                                    req={req}
+                                    folderMenuItems={folderMenuItems}
+                                    selectedRequestId={selectedRequestId}
+                                    editingId={editingId}
+                                    editingName={editingName}
+                                    onRename={handleRename}
+                                    onEdit={startEditing}
+                                    onDelete={(id) => {
+                                      deleteRequest(id);
+                                      message.success('请求已删除');
+                                    }}
+                                    onSelect={setSelectedRequest}
+                                    onMoveToFolder={handleMoveRequestToFolder}
+                                    setEditingId={setEditingId}
+                                    setEditingName={setEditingName}
+                                  />
+                                ))}
+                              </SortableContext>
+                            </div>
+                          ) : (
+                            <div className="px-4 py-2 text-xs text-gray-400">文件夹为空</div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+
+                {!hasAnyVisibleRequest && folders.length === 0 && (
+                  <div className="px-4 py-6 text-sm text-gray-500">暂无请求，点击“添加请求”开始。</div>
+                )}
               </DndContext>
             )}
           </div>

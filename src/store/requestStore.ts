@@ -25,6 +25,12 @@ export interface ApiMapping {
   key: string
 }
 
+export interface RequestFolder {
+  id: string
+  name: string
+  expanded: boolean
+}
+
 export interface HttpRequest {
   id: string
   name: string
@@ -37,15 +43,22 @@ export interface HttpRequest {
   inputFields: ParamField[]
   outputFields: OutputField[]
   apiMappings: ApiMapping[]
+  folderId?: string | null
 }
 
 interface RequestStore {
   requests: HttpRequest[]
-  addRequest: () => void
+  folders: RequestFolder[]
+  addRequest: (folderId?: string | null) => void
   updateRequest: (id: string, updates: Partial<HttpRequest>) => void
   deleteRequest: (id: string) => void
   reorderRequests: (oldIndex: number, newIndex: number) => void
-  setRequestsState: (requests: HttpRequest[], selectedRequestId: string | null) => void
+  addFolder: () => void
+  updateFolder: (id: string, updates: Partial<RequestFolder>) => void
+  deleteFolder: (id: string) => void
+  toggleFolderExpanded: (id: string) => void
+  moveRequestToFolder: (requestId: string, folderId: string | null) => void
+  setRequestsState: (requests: HttpRequest[], selectedRequestId: string | null, folders?: RequestFolder[]) => void
   selectedRequestId: string | null
   setSelectedRequest: (id: string | null) => void
 }
@@ -63,10 +76,11 @@ const DEFAULT_REQUEST: HttpRequest = {
   inputFields: [],
   outputFields: [],
   apiMappings: [],
+  folderId: null,
 }
 
-const createRequestTemplate = (index: number): HttpRequest => ({
-  id: Date.now().toString(),
+const createRequestTemplate = (index: number, folderId: string | null = null): HttpRequest => ({
+  id: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
   name: `请求 ${index}`,
   description: '',
   method: 'GET',
@@ -77,6 +91,13 @@ const createRequestTemplate = (index: number): HttpRequest => ({
   inputFields: [],
   outputFields: [],
   apiMappings: [],
+  folderId,
+})
+
+const createFolderTemplate = (index: number): RequestFolder => ({
+  id: `folder-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+  name: `文件夹 ${index}`,
+  expanded: true,
 })
 
 const normalizeRequest = (req: Partial<HttpRequest>, fallbackIndex: number): HttpRequest => ({
@@ -91,12 +112,21 @@ const normalizeRequest = (req: Partial<HttpRequest>, fallbackIndex: number): Htt
   inputFields: Array.isArray(req.inputFields) ? req.inputFields : [],
   outputFields: Array.isArray(req.outputFields) ? req.outputFields : [],
   apiMappings: Array.isArray(req.apiMappings) ? req.apiMappings : [],
+  folderId: typeof req.folderId === 'string' && req.folderId.trim() ? req.folderId : null,
+})
+
+const normalizeFolder = (folder: Partial<RequestFolder>, fallbackIndex: number): RequestFolder => ({
+  id: typeof folder.id === 'string' && folder.id.trim() ? folder.id : `folder-${Date.now()}-${fallbackIndex}`,
+  name: typeof folder.name === 'string' && folder.name.trim() ? folder.name : `文件夹 ${fallbackIndex + 1}`,
+  expanded: folder.expanded !== false,
 })
 
 export const useRequestStore = create<RequestStore>((set) => ({
   requests: [DEFAULT_REQUEST],
-  addRequest: () => set((state) => {
-    const next = createRequestTemplate(state.requests.length + 1)
+  folders: [],
+  addRequest: (folderId = null) => set((state) => {
+    const hasFolder = folderId && state.folders.some((folder) => folder.id === folderId);
+    const next = createRequestTemplate(state.requests.length + 1, hasFolder ? folderId : null)
     return {
       requests: [
         ...state.requests,
@@ -123,16 +153,58 @@ export const useRequestStore = create<RequestStore>((set) => ({
       newRequests.splice(newIndex, 0, movedItem);
       return { requests: newRequests };
     }),
-  setRequestsState: (requests, selectedRequestId) =>
+  addFolder: () =>
+    set((state) => ({
+      folders: [...state.folders, createFolderTemplate(state.folders.length + 1)],
+    })),
+  updateFolder: (id, updates) =>
+    set((state) => ({
+      folders: state.folders.map((folder) => (
+        folder.id === id ? { ...folder, ...updates } : folder
+      )),
+    })),
+  deleteFolder: (id) =>
+    set((state) => ({
+      folders: state.folders.filter((folder) => folder.id !== id),
+      requests: state.requests.map((req) => (
+        req.folderId === id ? { ...req, folderId: null } : req
+      )),
+    })),
+  toggleFolderExpanded: (id) =>
+    set((state) => ({
+      folders: state.folders.map((folder) => (
+        folder.id === id ? { ...folder, expanded: !folder.expanded } : folder
+      )),
+    })),
+  moveRequestToFolder: (requestId, folderId) =>
+    set((state) => {
+      const normalizedFolderId = folderId && state.folders.some((folder) => folder.id === folderId) ? folderId : null;
+      return {
+        requests: state.requests.map((req) => (
+          req.id === requestId ? { ...req, folderId: normalizedFolderId } : req
+        )),
+      };
+    }),
+  setRequestsState: (requests, selectedRequestId, folders) =>
     set(() => {
+      const normalizedFolders = (Array.isArray(folders) ? folders : [])
+        .map((folder, index) => normalizeFolder(folder, index));
+      const folderIds = new Set(normalizedFolders.map((folder) => folder.id));
       const normalizedRequests = (Array.isArray(requests) ? requests : [])
-        .map((req, index) => normalizeRequest(req, index));
+        .map((req, index) => {
+          const normalized = normalizeRequest(req, index);
+          return {
+            ...normalized,
+            folderId: normalized.folderId && folderIds.has(normalized.folderId) ? normalized.folderId : null,
+          };
+        });
       const nextRequests = normalizedRequests.length > 0 ? normalizedRequests : [DEFAULT_REQUEST];
       const nextSelectedRequestId = selectedRequestId && nextRequests.some((req) => req.id === selectedRequestId)
         ? selectedRequestId
         : nextRequests[0]?.id || null;
       return {
         requests: nextRequests,
+        folders: normalizedFolders,
         selectedRequestId: nextSelectedRequestId,
       };
     }),

@@ -41,7 +41,11 @@ export const RequestPage: React.FC = () => {
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
 
   const persistRequestState = useCallback(
-    async (payload: { requests: ReturnType<typeof useRequestStore.getState>['requests']; selectedRequestId: string | null }) => {
+    async (payload: {
+      requests: ReturnType<typeof useRequestStore.getState>['requests'];
+      folders: ReturnType<typeof useRequestStore.getState>['folders'];
+      selectedRequestId: string | null
+    }) => {
       const serialized = JSON.stringify(payload);
       if (serialized === lastSavedRef.current) {
         return;
@@ -73,6 +77,7 @@ export const RequestPage: React.FC = () => {
     const snapshot = useRequestStore.getState();
     await persistRequestState({
       requests: snapshot.requests,
+      folders: snapshot.folders,
       selectedRequestId: snapshot.selectedRequestId,
     });
   }, [persistRequestState]);
@@ -87,7 +92,7 @@ export const RequestPage: React.FC = () => {
         if (cancelled) {
           return;
         }
-        setRequestsState(data.requests, data.selectedRequestId);
+        setRequestsState(data.requests, data.selectedRequestId, data.folders);
         setSaveError(null);
       } catch (error) {
         const details = getErrorMessage(error);
@@ -100,6 +105,7 @@ export const RequestPage: React.FC = () => {
         const snapshot = useRequestStore.getState();
         lastSavedRef.current = JSON.stringify({
           requests: snapshot.requests,
+          folders: snapshot.folders,
           selectedRequestId: snapshot.selectedRequestId,
         });
         initializedRef.current = true;
@@ -125,6 +131,7 @@ export const RequestPage: React.FC = () => {
       saveTimerRef.current = window.setTimeout(async () => {
         const payload = {
           requests: state.requests,
+          folders: state.folders,
           selectedRequestId: state.selectedRequestId,
         };
         try {
