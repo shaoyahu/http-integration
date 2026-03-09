@@ -4,6 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { fetchCaptcha, registerUser } from '../api/auth';
 import { useAuthStore } from '../store/authStore';
+import { getDefaultAuthorizedPath } from '../components/AuthRoutes';
 
 const { Title, Text } = Typography;
 
@@ -64,7 +65,7 @@ export const RegisterPage: React.FC = () => {
         captchaCode: values.verifyCodeInput.trim(),
       });
       setSession(result.user);
-      navigate('/requests', { replace: true });
+      navigate(getDefaultAuthorizedPath(result.user), { replace: true });
     } catch (error) {
       setErrorMessage(parseRegisterError(error));
       refreshVerifyCode();

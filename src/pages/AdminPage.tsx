@@ -1,5 +1,6 @@
 import React from 'react';
-import { Alert, Card, Layout, Spin, Table, Typography } from 'antd';
+import { Alert, Button, Card, Layout, Spin, Table, Typography } from 'antd';
+import { useNavigate } from 'react-router-dom';
 import { RouteSidebar } from '../components/RouteSidebar';
 import { fetchAdminStats } from '../api/http';
 
@@ -7,6 +8,7 @@ const { Content } = Layout;
 const { Title, Paragraph } = Typography;
 
 export const AdminPage: React.FC = () => {
+  const navigate = useNavigate();
   const [loading, setLoading] = React.useState(true);
   const [errorMessage, setErrorMessage] = React.useState('');
   const [stats, setStats] = React.useState({
@@ -63,6 +65,14 @@ export const AdminPage: React.FC = () => {
           <Paragraph className="!mb-5 text-gray-600">
             统计所有用户的请求和工作流总量，并展示两者占比。
           </Paragraph>
+          <div className="!mb-5 flex gap-2">
+            <Button onClick={() => navigate('/admin/users')}>
+              进入用户管理
+            </Button>
+            <Button onClick={() => navigate('/admin/identities')}>
+              进入身份管理
+            </Button>
+          </div>
           {errorMessage ? <Alert type="error" message={errorMessage} className="mb-4" /> : null}
           {loading ? (
             <div className="py-12 flex items-center justify-center">

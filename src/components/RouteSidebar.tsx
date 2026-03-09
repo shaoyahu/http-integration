@@ -1,37 +1,59 @@
 import React from 'react';
 import { Avatar, Button, Layout, Popover, Tooltip, Typography } from 'antd';
-import { ApiOutlined, SettingOutlined, ShareAltOutlined, UserOutlined } from '@ant-design/icons';
+import { ApiOutlined, IdcardOutlined, SettingOutlined, ShareAltOutlined, TeamOutlined, UserOutlined } from '@ant-design/icons';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { logoutUser } from '../api/auth';
 import { useAuthStore } from '../store/authStore';
+import { USER_PERMISSIONS, USER_ROLES } from '../constants/auth';
+import { getDefaultAuthorizedPath } from './AuthRoutes';
 
 const { Sider } = Layout;
 const { Text } = Typography;
-
-const navItems = [
-  { key: 'requests', label: '请求管理', path: '/requests', icon: <ApiOutlined /> },
-  { key: 'workflows', label: '工作流', path: '/workflows', icon: <ShareAltOutlined /> },
-];
-
-const adminNavItems = [
-  { key: 'admin', label: '管理后台', path: '/admin', icon: <SettingOutlined /> },
-];
 
 export const RouteSidebar: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const clearSession = useAuthStore((state) => state.clearSession);
   const user = useAuthStore((state) => state.user);
+  const permissions = Array.isArray(user?.permissions) ? user.permissions : [];
   const isAdminRoute = location.pathname.startsWith('/admin');
-  const sidebarItems = isAdminRoute ? adminNavItems : navItems;
-  const activeKey = location.pathname.startsWith('/workflows')
-    ? 'workflows'
-    : (location.pathname.startsWith('/requests')
-      ? 'requests'
-      : (isAdminRoute ? 'admin' : ''));
+  const mainNavItems = [
+    permissions.includes(USER_PERMISSIONS.REQUEST_MANAGEMENT)
+      ? { key: 'requests', label: '请求管理', path: '/requests', icon: <ApiOutlined /> }
+      : null,
+    permissions.includes(USER_PERMISSIONS.WORKFLOW_MANAGEMENT)
+      ? { key: 'workflows', label: '工作流管理', path: '/workflows', icon: <ShareAltOutlined /> }
+      : null,
+  ].filter(Boolean) as { key: string; label: string; path: string; icon: React.ReactNode }[];
+  const adminNavItems = [
+    { key: 'admin', label: '管理后台', path: '/admin', icon: <SettingOutlined /> },
+    { key: 'userManagement', label: '用户管理', path: '/admin/users', icon: <TeamOutlined /> },
+    { key: 'identityManagement', label: '身份管理', path: '/admin/identities', icon: <IdcardOutlined /> },
+  ];
+  const sidebarItems = isAdminRoute ? adminNavItems : mainNavItems;
+  let activeKey = '';
+  if (location.pathname.startsWith('/workflows')) {
+    activeKey = 'workflows';
+  } else if (location.pathname.startsWith('/requests')) {
+    activeKey = 'requests';
+  } else if (
+    location.pathname.startsWith('/admin/users')
+    || location.pathname.startsWith('/admin/user-permissions')
+    || location.pathname.startsWith('/user-permissions')
+  ) {
+    activeKey = 'userManagement';
+  } else if (location.pathname.startsWith('/admin/identities')) {
+    activeKey = 'identityManagement';
+  } else if (location.pathname.startsWith('/admin')) {
+    activeKey = 'admin';
+  }
   const userInitial = (user?.username || 'U').trim().slice(0, 1).toUpperCase();
-  const switchLabel = isAdminRoute ? '开发平台' : '管理后台';
-  const switchPath = isAdminRoute ? '/requests' : '/admin';
+  const hasAdminPanelPermission = permissions.includes(USER_PERMISSIONS.ADMIN_PANEL);
+  const canAccessAdmin = user?.role === USER_ROLES.ADMIN
+    || hasAdminPanelPermission
+    || (typeof user?.username === 'string' && user.username.trim().toLowerCase() === 'admin');
+  const switchLabel = isAdminRoute ? '业务页面' : '管理后台';
+  const switchPath = isAdminRoute ? getDefaultAuthorizedPath(user) : '/admin';
 
   const handleLogout = async () => {
     try {
@@ -55,9 +77,11 @@ export const RouteSidebar: React.FC = () => {
           <Text type="secondary" className="text-xs">已登录</Text>
         </div>
       </div>
-      <Button className="mb-2" block onClick={() => navigate(switchPath)}>
-        {switchLabel}
-      </Button>
+      {canAccessAdmin ? (
+        <Button className="mb-2" block onClick={() => navigate(switchPath)}>
+          {switchLabel}
+        </Button>
+      ) : null}
       <Button danger block onClick={handleLogout}>
         退出登录
       </Button>
