@@ -4,6 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { loginUser } from '../api/auth';
 import { useAuthStore } from '../store/authStore';
+import { getDefaultAuthorizedPath } from '../components/AuthRoutes';
 
 const { Title, Text } = Typography;
 
@@ -36,7 +37,7 @@ export const LoginPage: React.FC = () => {
         password: values.password,
       });
       setSession(result.user);
-      navigate('/requests', { replace: true });
+      navigate(getDefaultAuthorizedPath(result.user), { replace: true });
     } catch (error) {
       setErrorMessage(parseLoginError(error));
     } finally {

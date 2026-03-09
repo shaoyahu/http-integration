@@ -3,6 +3,7 @@ import cors from 'cors';
 import http from 'http';
 import https from 'https';
 import crypto from 'crypto';
+import { ObjectId } from 'mongodb';
 import 'dotenv/config';
 import { connectMongo, getDb, getMongoState, disconnectMongo } from './mongo.js';
 
@@ -30,12 +31,55 @@ const REQUEST_STATE_COLLECTION = 'request_states';
 const REQUEST_STATE_DOC_ID = 'request_management_state';
 const WORKFLOW_STATE_COLLECTION = 'workflow_states';
 const USERS_COLLECTION = 'users';
+const USER_IDENTITIES_COLLECTION = 'user_identities';
+const PERMISSION_POINTS_COLLECTION = 'permission_points';
 const USER_SESSIONS_COLLECTION = 'user_sessions';
 const AUTH_CAPTCHAS_COLLECTION = 'auth_captchas';
 const SESSION_EXPIRE_MS = 7 * 24 * 60 * 60 * 1000;
 const CAPTCHA_EXPIRE_MS = 5 * 60 * 1000;
 const SESSION_COOKIE_NAME = 'http_client_session';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+const USER_ROLE = {
+  USER: 'user',
+  ADMIN: 'admin',
+};
+const BUILTIN_IDENTITY_ID = {
+  USER: 'identity_user',
+  ADMIN: 'identity_admin',
+};
+const USER_PERMISSION = {
+  REQUEST_MANAGEMENT: 'request_management',
+  WORKFLOW_MANAGEMENT: 'workflow_management',
+  ADMIN_PANEL: 'admin_panel',
+};
+const DEFAULT_USER_PERMISSIONS = [
+  USER_PERMISSION.REQUEST_MANAGEMENT,
+  USER_PERMISSION.WORKFLOW_MANAGEMENT,
+];
+const ADMIN_ALL_PERMISSIONS = [
+  USER_PERMISSION.REQUEST_MANAGEMENT,
+  USER_PERMISSION.WORKFLOW_MANAGEMENT,
+  USER_PERMISSION.ADMIN_PANEL,
+];
+const BUILTIN_IDENTITIES = [
+  {
+    _id: BUILTIN_IDENTITY_ID.USER,
+    name: '普通用户',
+    permissions: [...DEFAULT_USER_PERMISSIONS],
+  },
+  {
+    _id: BUILTIN_IDENTITY_ID.ADMIN,
+    name: '管理员',
+    permissions: [...ADMIN_ALL_PERMISSIONS],
+  },
+];
+const BUILTIN_PERMISSION_POINTS = [
+  { _id: USER_PERMISSION.REQUEST_MANAGEMENT, name: '请求管理权限' },
+  { _id: USER_PERMISSION.WORKFLOW_MANAGEMENT, name: '工作流管理权限' },
+  { _id: USER_PERMISSION.ADMIN_PANEL, name: '管理后台权限' },
+];
+
+const ALL_USER_PERMISSIONS = new Set(Object.values(USER_PERMISSION));
 
 const buildSessionCookie = (token) => {
   const maxAgeSeconds = Math.floor(SESSION_EXPIRE_MS / 1000);
@@ -98,6 +142,178 @@ const compareHashHex = (candidateHex, expectedHex) => {
     return false;
   }
   return crypto.timingSafeEqual(candidate, expected);
+};
+
+const normalizePermissions = (permissions, { fallbackToDefault = true } = {}) => {
+  if (!Array.isArray(permissions)) {
+    return fallbackToDefault ? [...DEFAULT_USER_PERMISSIONS] : [];
+  }
+  const normalized = permissions
+    .filter((permission) => typeof permission === 'string' && ALL_USER_PERMISSIONS.has(permission))
+    .filter((permission, index, arr) => arr.indexOf(permission) === index);
+  if (normalized.length > 0) {
+    return normalized;
+  }
+  return fallbackToDefault ? [...DEFAULT_USER_PERMISSIONS] : [];
+};
+
+const normalizePermissionIds = (permissionIds, { fallbackToDefault = true } = {}) => {
+  if (!Array.isArray(permissionIds)) {
+    return fallbackToDefault ? [...DEFAULT_USER_PERMISSIONS] : [];
+  }
+  const normalized = permissionIds
+    .filter((permission) => typeof permission === 'string' && permission.trim())
+    .map((permission) => permission.trim())
+    .filter((permission, index, arr) => arr.indexOf(permission) === index);
+  if (normalized.length > 0) {
+    return normalized;
+  }
+  return fallbackToDefault ? [...DEFAULT_USER_PERMISSIONS] : [];
+};
+
+const isAdminRoleValue = (role) => role === USER_ROLE.ADMIN || role === 'ADMIN' || role === '管理员';
+
+const deriveRoleFromPermissions = (permissions, explicitRole) => {
+  if (isAdminRoleValue(explicitRole)) {
+    return USER_ROLE.ADMIN;
+  }
+  return permissions.includes(USER_PERMISSION.ADMIN_PANEL) ? USER_ROLE.ADMIN : USER_ROLE.USER;
+};
+
+const normalizeUserIdentity = (user = {}, options = {}) => {
+  if (typeof user.username === 'string' && user.username.trim().toLowerCase() === 'admin') {
+    return {
+      role: USER_ROLE.ADMIN,
+      permissions: [...ADMIN_ALL_PERMISSIONS],
+    };
+  }
+  const basePermissions = normalizePermissions(user.permissions, options);
+  const normalizedRole = deriveRoleFromPermissions(basePermissions, user.role);
+  if (normalizedRole === USER_ROLE.ADMIN) {
+    return {
+      role: USER_ROLE.ADMIN,
+      permissions: [...ADMIN_ALL_PERMISSIONS],
+    };
+  }
+  return {
+    role: USER_ROLE.USER,
+    permissions: basePermissions,
+  };
+};
+
+const normalizeIdentityIds = (identityIds, { fallbackToDefault = true } = {}) => {
+  if (!Array.isArray(identityIds)) {
+    return fallbackToDefault ? [BUILTIN_IDENTITY_ID.USER] : [];
+  }
+  const normalized = identityIds
+    .filter((id) => typeof id === 'string' && id.trim())
+    .map((id) => id.trim())
+    .filter((id, index, arr) => arr.indexOf(id) === index);
+  if (normalized.length > 0) {
+    return normalized;
+  }
+  return fallbackToDefault ? [BUILTIN_IDENTITY_ID.USER] : [];
+};
+
+const resolveIdentityByLegacyUser = (user = {}) => {
+  const normalized = normalizeUserIdentity(user);
+  if (normalized.role === USER_ROLE.ADMIN) {
+    return [BUILTIN_IDENTITY_ID.ADMIN];
+  }
+  return [BUILTIN_IDENTITY_ID.USER];
+};
+
+const resolveUserAccessFromIdentity = async (db, user = {}, options = {}) => {
+  const fallbackToDefault = options.fallbackToDefault !== false;
+  const legacyIdentityIds = resolveIdentityByLegacyUser(user);
+  const requestedIdentityIds = normalizeIdentityIds(user.identityIds, { fallbackToDefault });
+  const candidateIdentityIds = requestedIdentityIds.length > 0 ? requestedIdentityIds : legacyIdentityIds;
+
+  const identityDocs = candidateIdentityIds.length > 0
+    ? await db.collection(USER_IDENTITIES_COLLECTION).find(
+      { _id: { $in: candidateIdentityIds } },
+      { projection: { name: 1, permissions: 1 } }
+    ).toArray()
+    : [];
+  const identityMap = new Map(identityDocs.map((item) => [String(item._id), item]));
+  let identityIds = candidateIdentityIds.filter((id) => identityMap.has(id));
+
+  if (identityIds.length === 0 && fallbackToDefault) {
+    identityIds = [...legacyIdentityIds];
+  }
+
+  const fallbackIdentityDocs = await db.collection(USER_IDENTITIES_COLLECTION).find(
+    { _id: { $in: identityIds } },
+    { projection: { name: 1, permissions: 1 } }
+  ).toArray();
+  const fallbackIdentityMap = new Map(fallbackIdentityDocs.map((item) => [String(item._id), item]));
+
+  let identities = identityIds
+    .map((id) => fallbackIdentityMap.get(id))
+    .filter(Boolean)
+    .map((identityDoc) => ({
+      id: String(identityDoc._id),
+      name: typeof identityDoc.name === 'string' ? identityDoc.name : String(identityDoc._id),
+      permissions: normalizePermissionIds(identityDoc.permissions, { fallbackToDefault: false }),
+    }));
+
+  if (identities.length === 0 && fallbackToDefault) {
+    const defaultDoc = await db.collection(USER_IDENTITIES_COLLECTION).findOne(
+      { _id: BUILTIN_IDENTITY_ID.USER },
+      { projection: { name: 1, permissions: 1 } }
+    );
+    if (defaultDoc) {
+      identities = [{
+        id: BUILTIN_IDENTITY_ID.USER,
+        name: typeof defaultDoc.name === 'string' ? defaultDoc.name : '普通用户',
+        permissions: normalizePermissionIds(defaultDoc.permissions, { fallbackToDefault: true }),
+      }];
+      identityIds = [BUILTIN_IDENTITY_ID.USER];
+    }
+  }
+
+  const permissionsSet = new Set(
+    identities.flatMap((identity) => normalizePermissionIds(identity.permissions, { fallbackToDefault: false }))
+  );
+  if (typeof user.username === 'string' && user.username.trim().toLowerCase() === 'admin') {
+    identityIds = [BUILTIN_IDENTITY_ID.ADMIN];
+    identities = [{
+      id: BUILTIN_IDENTITY_ID.ADMIN,
+      name: '管理员',
+      permissions: [...ADMIN_ALL_PERMISSIONS],
+    }];
+    ADMIN_ALL_PERMISSIONS.forEach((permission) => permissionsSet.add(permission));
+  }
+  const permissions = [...permissionsSet];
+  const role = permissions.includes(USER_PERMISSION.ADMIN_PANEL) ? USER_ROLE.ADMIN : USER_ROLE.USER;
+
+  if (role === USER_ROLE.ADMIN) {
+    return {
+      role,
+      permissions: [...ADMIN_ALL_PERMISSIONS],
+      identityIds: identityIds.includes(BUILTIN_IDENTITY_ID.ADMIN) ? identityIds : [...identityIds, BUILTIN_IDENTITY_ID.ADMIN],
+      identities,
+    };
+  }
+  return {
+    role,
+    permissions,
+    identityIds,
+    identities,
+  };
+};
+
+const buildAuthUserPayload = (user = {}, access = null) => {
+  const identity = access || normalizeUserIdentity(user);
+  return {
+    id: user._id,
+    username: user.username,
+    lastLoginAt: user.lastLoginAt || null,
+    disabled: Boolean(user.disabled),
+    role: identity.role,
+    permissions: identity.permissions,
+    identities: Array.isArray(identity.identities) ? identity.identities : [],
+  };
 };
 
 const generateCaptchaCode = (length = 6) => {
@@ -265,15 +481,35 @@ const requireAuth = async (req, res, next) => {
       res.setHeader('Set-Cookie', buildClearSessionCookie());
       return res.status(401).json({ error: 'Unauthorized', code: 'AUTH_USER_NOT_FOUND' });
     }
+    if (user.disabled) {
+      await db.collection(USER_SESSIONS_COLLECTION).deleteOne({ _id: session._id });
+      res.setHeader('Set-Cookie', buildClearSessionCookie());
+      return res.status(403).json({ error: '用户已被禁用', code: 'USER_DISABLED' });
+    }
+
+    const identity = await resolveUserAccessFromIdentity(db, user);
+    if (
+      user.role !== identity.role
+      || JSON.stringify(user.permissions || []) !== JSON.stringify(identity.permissions)
+      || JSON.stringify(normalizeIdentityIds(user.identityIds || [], { fallbackToDefault: false })) !== JSON.stringify(identity.identityIds)
+    ) {
+      await db.collection(USERS_COLLECTION).updateOne(
+        { _id: user._id },
+        {
+          $set: {
+            role: identity.role,
+            permissions: identity.permissions,
+            identityIds: identity.identityIds,
+            updatedAt: new Date(),
+          },
+        }
+      );
+    }
 
     req.auth = {
       tokenHash: session.tokenHash,
       sessionId: session._id,
-      user: {
-        id: user._id,
-        username: user.username,
-        lastLoginAt: user.lastLoginAt || null,
-      },
+      user: buildAuthUserPayload(user, identity),
     };
     await db.collection(USER_SESSIONS_COLLECTION).updateOne(
       { _id: session._id },
@@ -290,6 +526,22 @@ const requireAuth = async (req, res, next) => {
       details: error instanceof Error ? error.message : String(error),
     });
   }
+};
+
+const requireAnyPermission = (...permissions) => (req, res, next) => {
+  const username = typeof req.auth?.user?.username === 'string' ? req.auth.user.username.trim().toLowerCase() : '';
+  if (req.auth?.user?.role === USER_ROLE.ADMIN || username === 'admin') {
+    return next();
+  }
+  const userPermissions = Array.isArray(req.auth?.user?.permissions) ? req.auth.user.permissions : [];
+  if (permissions.some((permission) => userPermissions.includes(permission))) {
+    return next();
+  }
+  return res.status(403).json({
+    error: 'Forbidden',
+    code: 'PERMISSION_DENIED',
+    requiredPermissions: permissions,
+  });
 };
 
 app.get('/api/auth/captcha', async (req, res) => {
@@ -364,10 +616,16 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(409).json({ error: '用户已存在', code: 'USER_ALREADY_EXISTS' });
     }
     const now = new Date();
+    const identity = normalizeUserIdentity({});
+    const identityIds = [BUILTIN_IDENTITY_ID.USER];
     const insertResult = await db.collection(USERS_COLLECTION).insertOne({
       username: normalizedUsername,
       passwordHash: hashPassword(normalizedPassword),
       lastLoginAt: now,
+      role: identity.role,
+      permissions: identity.permissions,
+      identityIds,
+      disabled: false,
       createdAt: now,
       updatedAt: now,
     });
@@ -378,6 +636,13 @@ app.post('/api/auth/register', async (req, res) => {
         id: insertResult.insertedId,
         username: normalizedUsername,
         lastLoginAt: now,
+        role: identity.role,
+        permissions: identity.permissions,
+        identities: [{
+          id: BUILTIN_IDENTITY_ID.USER,
+          name: '普通用户',
+          permissions: [...DEFAULT_USER_PERMISSIONS],
+        }],
       },
     });
   } catch (error) {
@@ -406,6 +671,9 @@ app.post('/api/auth/login', async (req, res) => {
     if (!user) {
       return res.status(404).json({ error: '用户不存在', code: 'USER_NOT_FOUND' });
     }
+    if (user.disabled) {
+      return res.status(403).json({ error: '用户已被禁用', code: 'USER_DISABLED' });
+    }
     const isPasswordCorrect = verifyPassword(normalizedPassword, user.passwordHash);
     if (!isPasswordCorrect) {
       return res.status(401).json({ error: '密码错误', code: 'PASSWORD_INCORRECT' });
@@ -417,10 +685,10 @@ app.post('/api/auth/login', async (req, res) => {
     );
     const token = await createSession(db, user._id);
     res.setHeader('Set-Cookie', buildSessionCookie(token));
+    const access = await resolveUserAccessFromIdentity(db, user);
     return res.json({
       user: {
-        id: user._id,
-        username: user.username,
+        ...buildAuthUserPayload(user, access),
         lastLoginAt: now,
       },
     });
@@ -453,7 +721,7 @@ app.post('/api/auth/logout', requireAuth, async (req, res) => {
   }
 });
 
-app.get('/api/requests-state', requireAuth, async (req, res) => {
+app.get('/api/requests-state', requireAuth, requireAnyPermission(USER_PERMISSION.REQUEST_MANAGEMENT), async (req, res) => {
   const db = await getDbOrReconnect();
   if (!db) {
     return res.status(503).json(mongoUnavailableResponse());
@@ -475,7 +743,7 @@ app.get('/api/requests-state', requireAuth, async (req, res) => {
   }
 });
 
-app.put('/api/requests-state', requireAuth, async (req, res) => {
+app.put('/api/requests-state', requireAuth, requireAnyPermission(USER_PERMISSION.REQUEST_MANAGEMENT), async (req, res) => {
   const db = await getDbOrReconnect();
   if (!db) {
     return res.status(503).json(mongoUnavailableResponse());
@@ -505,7 +773,7 @@ app.put('/api/requests-state', requireAuth, async (req, res) => {
   }
 });
 
-app.get('/api/requests', requireAuth, async (req, res) => {
+app.get('/api/requests', requireAuth, requireAnyPermission(USER_PERMISSION.REQUEST_MANAGEMENT), async (req, res) => {
   const db = await getDbOrReconnect();
   if (!db) {
     return res.status(503).json(mongoUnavailableResponse());
@@ -524,7 +792,7 @@ app.get('/api/requests', requireAuth, async (req, res) => {
   }
 });
 
-app.get('/api/workflows-state', requireAuth, async (req, res) => {
+app.get('/api/workflows-state', requireAuth, requireAnyPermission(USER_PERMISSION.WORKFLOW_MANAGEMENT), async (req, res) => {
   const db = await getDbOrReconnect();
   if (!db) {
     return res.status(503).json(mongoUnavailableResponse());
@@ -545,7 +813,7 @@ app.get('/api/workflows-state', requireAuth, async (req, res) => {
   }
 });
 
-app.put('/api/workflows-state', requireAuth, async (req, res) => {
+app.put('/api/workflows-state', requireAuth, requireAnyPermission(USER_PERMISSION.WORKFLOW_MANAGEMENT), async (req, res) => {
   const db = await getDbOrReconnect();
   if (!db) {
     return res.status(503).json(mongoUnavailableResponse());
@@ -575,7 +843,7 @@ app.put('/api/workflows-state', requireAuth, async (req, res) => {
   }
 });
 
-app.get('/api/admin/stats', requireAuth, async (req, res) => {
+app.get('/api/admin/stats', requireAuth, requireAnyPermission(USER_PERMISSION.ADMIN_PANEL), async (req, res) => {
   const db = await getDbOrReconnect();
   if (!db) {
     return res.status(503).json(mongoUnavailableResponse());
@@ -621,7 +889,400 @@ app.get('/api/admin/stats', requireAuth, async (req, res) => {
   }
 });
 
-app.all('/api/proxy', requireAuth, async (req, res) => {
+const listAdminUsersHandler = async (req, res) => {
+  const db = await getDbOrReconnect();
+  if (!db) {
+    return res.status(503).json(mongoUnavailableResponse());
+  }
+  try {
+    const identities = await db.collection(USER_IDENTITIES_COLLECTION)
+      .find({}, { projection: { name: 1, permissions: 1 } })
+      .toArray();
+    const identityMap = new Map(identities.map((item) => [String(item._id), item]));
+    const users = await db.collection(USERS_COLLECTION)
+      .find({}, { projection: { username: 1, role: 1, permissions: 1, identityIds: 1, disabled: 1, lastLoginAt: 1 } })
+      .sort({ createdAt: -1 })
+      .toArray();
+    return res.json({
+      users: users.map((user) => {
+        let identityIds = normalizeIdentityIds(user.identityIds, { fallbackToDefault: false });
+        if (identityIds.length === 0) {
+          identityIds = resolveIdentityByLegacyUser(user);
+        }
+        if (typeof user.username === 'string' && user.username.trim().toLowerCase() === 'admin') {
+          identityIds = [BUILTIN_IDENTITY_ID.ADMIN];
+        }
+        const identityNames = identityIds
+          .map((id) => identityMap.get(id)?.name)
+          .filter(Boolean);
+        return {
+          id: user._id,
+          username: user.username,
+          identityIds,
+          identities: identityNames,
+          disabled: Boolean(user.disabled),
+          lastLoginAt: user.lastLoginAt || null,
+        };
+      }),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      error: 'Failed to load admin users',
+      details: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+const listIdentityOverviewHandler = async (req, res) => {
+  const db = await getDbOrReconnect();
+  if (!db) {
+    return res.status(503).json(mongoUnavailableResponse());
+  }
+  try {
+    const identities = await db.collection(USER_IDENTITIES_COLLECTION)
+      .find({}, { projection: { name: 1, permissions: 1 } })
+      .sort({ createdAt: 1 })
+      .toArray();
+    const identityMap = new Map(identities.map((item) => [String(item._id), item]));
+    const users = await db.collection(USERS_COLLECTION)
+      .find({}, { projection: { username: 1, role: 1, permissions: 1, identityIds: 1 } })
+      .toArray();
+
+    const countMap = new Map(identities.map((identity) => [String(identity._id), 0]));
+    users.forEach((user) => {
+      let identityIds = normalizeIdentityIds(user.identityIds, { fallbackToDefault: false });
+      if (identityIds.length === 0) {
+        identityIds = resolveIdentityByLegacyUser(user);
+      }
+      if (typeof user.username === 'string' && user.username.trim().toLowerCase() === 'admin') {
+        identityIds = [BUILTIN_IDENTITY_ID.ADMIN];
+      }
+      identityIds
+        .filter((id, index, arr) => arr.indexOf(id) === index)
+        .forEach((id) => {
+          if (countMap.has(id)) {
+            countMap.set(id, (countMap.get(id) || 0) + 1);
+          }
+        });
+    });
+
+    const items = Array.from(identityMap.entries()).map(([id, identityDoc]) => ({
+      id,
+      name: typeof identityDoc.name === 'string' ? identityDoc.name : id,
+      permissions: normalizePermissionIds(identityDoc.permissions, { fallbackToDefault: false }),
+      userCount: countMap.get(id) || 0,
+    }));
+    return res.json({ identities: items });
+  } catch (error) {
+    return res.status(500).json({
+      error: 'Failed to load identities',
+      details: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+const listPermissionPointsHandler = async (req, res) => {
+  const db = await getDbOrReconnect();
+  if (!db) {
+    return res.status(503).json(mongoUnavailableResponse());
+  }
+  try {
+    const permissions = await db.collection(PERMISSION_POINTS_COLLECTION)
+      .find({}, { projection: { name: 1 } })
+      .sort({ _id: 1 })
+      .toArray();
+    return res.json({
+      permissions: permissions.map((permission) => ({
+        id: String(permission._id),
+        name: permission.name || String(permission._id),
+      })),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      error: 'Failed to load permissions',
+      details: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+const validatePermissionIds = async (db, permissionIds = []) => {
+  if (!Array.isArray(permissionIds) || permissionIds.length === 0) {
+    return false;
+  }
+  const docs = await db.collection(PERMISSION_POINTS_COLLECTION)
+    .find({ _id: { $in: permissionIds } }, { projection: { _id: 1 } })
+    .toArray();
+  return docs.length === permissionIds.length;
+};
+
+const createIdentityHandler = async (req, res) => {
+  const db = await getDbOrReconnect();
+  if (!db) {
+    return res.status(503).json(mongoUnavailableResponse());
+  }
+  const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+  const permissionIds = normalizePermissionIds(req.body?.permissionIds, { fallbackToDefault: false });
+  if (!name) {
+    return res.status(400).json({ error: 'Identity name is required', code: 'IDENTITY_NAME_REQUIRED' });
+  }
+  if (permissionIds.length === 0) {
+    return res.status(400).json({ error: 'Identity permissions are required', code: 'IDENTITY_PERMISSIONS_REQUIRED' });
+  }
+  try {
+    const isValid = await validatePermissionIds(db, permissionIds);
+    if (!isValid) {
+      return res.status(400).json({ error: 'Invalid permissionIds', code: 'INVALID_PERMISSION_IDS' });
+    }
+    const id = `identity_${crypto.randomBytes(8).toString('hex')}`;
+    await db.collection(USER_IDENTITIES_COLLECTION).insertOne({
+      _id: id,
+      name,
+      permissions: permissionIds,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    return res.json({ identity: { id, name, permissions: permissionIds } });
+  } catch (error) {
+    return res.status(500).json({
+      error: 'Failed to create identity',
+      details: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+const updateIdentityHandler = async (req, res) => {
+  const db = await getDbOrReconnect();
+  if (!db) {
+    return res.status(503).json(mongoUnavailableResponse());
+  }
+  const identityId = typeof req.params.identityId === 'string' ? req.params.identityId.trim() : '';
+  if (!identityId) {
+    return res.status(400).json({ error: 'Invalid identityId', code: 'INVALID_IDENTITY_ID' });
+  }
+  const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+  const permissionIds = normalizePermissionIds(req.body?.permissionIds, { fallbackToDefault: false });
+  if (!name) {
+    return res.status(400).json({ error: 'Identity name is required', code: 'IDENTITY_NAME_REQUIRED' });
+  }
+  if (permissionIds.length === 0) {
+    return res.status(400).json({ error: 'Identity permissions are required', code: 'IDENTITY_PERMISSIONS_REQUIRED' });
+  }
+  try {
+    const isValid = await validatePermissionIds(db, permissionIds);
+    if (!isValid) {
+      return res.status(400).json({ error: 'Invalid permissionIds', code: 'INVALID_PERMISSION_IDS' });
+    }
+    const result = await db.collection(USER_IDENTITIES_COLLECTION).findOneAndUpdate(
+      { _id: identityId },
+      { $set: { name, permissions: permissionIds, updatedAt: new Date() } },
+      { returnDocument: 'after', projection: { name: 1, permissions: 1 } }
+    );
+    const identity = result?.value || result;
+    if (!identity) {
+      return res.status(404).json({ error: 'Identity not found', code: 'IDENTITY_NOT_FOUND' });
+    }
+    return res.json({
+      identity: {
+        id: String(identity._id),
+        name: identity.name,
+        permissions: normalizePermissionIds(identity.permissions, { fallbackToDefault: false }),
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({
+      error: 'Failed to update identity',
+      details: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+const createAdminUserHandler = async (req, res) => {
+  const db = await getDbOrReconnect();
+  if (!db) {
+    return res.status(503).json(mongoUnavailableResponse());
+  }
+  const username = typeof req.body?.username === 'string' ? req.body.username.trim() : '';
+  let identityIds = normalizeIdentityIds(req.body?.identityIds, { fallbackToDefault: false });
+  if (!username) {
+    return res.status(400).json({ error: 'Username is required', code: 'USERNAME_REQUIRED' });
+  }
+  if (identityIds.length === 0) {
+    return res.status(400).json({ error: 'At least one identity is required', code: 'IDENTITY_REQUIRED' });
+  }
+  try {
+    const identities = await db.collection(USER_IDENTITIES_COLLECTION)
+      .find({ _id: { $in: identityIds } }, { projection: { _id: 1 } })
+      .toArray();
+    if (identities.length !== identityIds.length) {
+      return res.status(400).json({ error: 'Invalid identityIds', code: 'INVALID_IDENTITY_IDS' });
+    }
+    const exists = await db.collection(USERS_COLLECTION).findOne({ username });
+    if (exists) {
+      return res.status(409).json({ error: '用户已存在', code: 'USER_ALREADY_EXISTS' });
+    }
+    const access = await resolveUserAccessFromIdentity(db, { username, identityIds }, { fallbackToDefault: false });
+    const now = new Date();
+    const temporaryPassword = crypto.randomBytes(12).toString('hex');
+    const result = await db.collection(USERS_COLLECTION).insertOne({
+      username,
+      passwordHash: hashPassword(temporaryPassword),
+      identityIds: access.identityIds,
+      role: access.role,
+      permissions: access.permissions,
+      disabled: false,
+      lastLoginAt: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+    return res.json({
+      user: {
+        id: result.insertedId,
+        username,
+        identityIds: access.identityIds,
+        identities: access.identities.map((item) => item.name),
+        disabled: false,
+        lastLoginAt: null,
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({
+      error: 'Failed to create user',
+      details: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+const updateAdminUserStatusHandler = async (req, res) => {
+  const db = await getDbOrReconnect();
+  if (!db) {
+    return res.status(503).json(mongoUnavailableResponse());
+  }
+  const rawUserId = typeof req.params.userId === 'string' ? req.params.userId.trim() : '';
+  if (!ObjectId.isValid(rawUserId)) {
+    return res.status(400).json({ error: 'Invalid userId', code: 'INVALID_USER_ID' });
+  }
+  const disabled = Boolean(req.body?.disabled);
+  const userObjectId = new ObjectId(rawUserId);
+  try {
+    const result = await db.collection(USERS_COLLECTION).findOneAndUpdate(
+      { _id: userObjectId },
+      { $set: { disabled, updatedAt: new Date() } },
+      { returnDocument: 'after', projection: { username: 1, identityIds: 1, disabled: 1, lastLoginAt: 1 } }
+    );
+    const user = result?.value || result;
+    if (!user) {
+      return res.status(404).json({ error: 'User not found', code: 'USER_NOT_FOUND' });
+    }
+    const access = await resolveUserAccessFromIdentity(db, user, { fallbackToDefault: true });
+    return res.json({
+      user: {
+        id: user._id,
+        username: user.username,
+        identityIds: access.identityIds,
+        identities: access.identities.map((item) => item.name),
+        disabled: Boolean(user.disabled),
+        lastLoginAt: user.lastLoginAt || null,
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({
+      error: 'Failed to update user status',
+      details: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+const updateUserPermissionsHandler = async (req, res) => {
+  const db = await getDbOrReconnect();
+  if (!db) {
+    return res.status(503).json(mongoUnavailableResponse());
+  }
+  const rawUserId = typeof req.params.userId === 'string' ? req.params.userId.trim() : '';
+  if (!ObjectId.isValid(rawUserId)) {
+    return res.status(400).json({ error: 'Invalid userId', code: 'INVALID_USER_ID' });
+  }
+  const userObjectId = new ObjectId(rawUserId);
+  try {
+    const currentUser = await db.collection(USERS_COLLECTION).findOne(
+      { _id: userObjectId },
+      { projection: { username: 1, role: 1, permissions: 1, identityIds: 1 } }
+    );
+    if (!currentUser) {
+      return res.status(404).json({ error: 'User not found', code: 'USER_NOT_FOUND' });
+    }
+    const currentIdentity = await resolveUserAccessFromIdentity(db, currentUser);
+    const requestedPermissions = normalizePermissions(req.body?.permissions, { fallbackToDefault: false });
+    if (currentIdentity.role === USER_ROLE.ADMIN && !requestedPermissions.includes(USER_PERMISSION.ADMIN_PANEL)) {
+      return res.status(400).json({
+        error: '管理员必须保留管理后台权限',
+        code: 'ADMIN_PANEL_PERMISSION_REQUIRED',
+      });
+    }
+    const identityIds = requestedPermissions.includes(USER_PERMISSION.ADMIN_PANEL)
+      ? [BUILTIN_IDENTITY_ID.ADMIN]
+      : [BUILTIN_IDENTITY_ID.USER];
+    const identity = await resolveUserAccessFromIdentity(
+      db,
+      {
+        username: currentUser.username,
+        identityIds,
+      },
+      { fallbackToDefault: false }
+    );
+
+    const result = await db.collection(USERS_COLLECTION).findOneAndUpdate(
+      { _id: userObjectId },
+      {
+        $set: {
+          role: identity.role,
+          permissions: identity.permissions,
+          identityIds: identity.identityIds,
+          updatedAt: new Date(),
+        },
+      },
+      {
+        returnDocument: 'after',
+        projection: { username: 1, role: 1, permissions: 1, lastLoginAt: 1, createdAt: 1 },
+      }
+    );
+    const user = result?.value || result;
+    if (!user) return res.status(404).json({ error: 'User not found', code: 'USER_NOT_FOUND' });
+    return res.json({
+      user: {
+        id: user._id,
+        username: user.username,
+        role: identity.role,
+        permissions: identity.permissions,
+        identities: identity.identities || [],
+        lastLoginAt: user.lastLoginAt || null,
+        createdAt: user.createdAt || null,
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({
+      error: 'Failed to update user permissions',
+      details: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+app.get('/api/admin/user-permissions', requireAuth, requireAnyPermission(USER_PERMISSION.ADMIN_PANEL), listAdminUsersHandler);
+app.put('/api/admin/user-permissions/:userId', requireAuth, requireAnyPermission(USER_PERMISSION.ADMIN_PANEL), updateUserPermissionsHandler);
+app.get('/api/admin/users', requireAuth, requireAnyPermission(USER_PERMISSION.ADMIN_PANEL), listAdminUsersHandler);
+app.put('/api/admin/users/:userId', requireAuth, requireAnyPermission(USER_PERMISSION.ADMIN_PANEL), updateUserPermissionsHandler);
+app.post('/api/admin/users', requireAuth, requireAnyPermission(USER_PERMISSION.ADMIN_PANEL), createAdminUserHandler);
+app.put('/api/admin/users/:userId/status', requireAuth, requireAnyPermission(USER_PERMISSION.ADMIN_PANEL), updateAdminUserStatusHandler);
+app.get('/api/admin/identities', requireAuth, requireAnyPermission(USER_PERMISSION.ADMIN_PANEL), listIdentityOverviewHandler);
+app.post('/api/admin/identities', requireAuth, requireAnyPermission(USER_PERMISSION.ADMIN_PANEL), createIdentityHandler);
+app.put('/api/admin/identities/:identityId', requireAuth, requireAnyPermission(USER_PERMISSION.ADMIN_PANEL), updateIdentityHandler);
+app.get('/api/admin/permissions', requireAuth, requireAnyPermission(USER_PERMISSION.ADMIN_PANEL), listPermissionPointsHandler);
+// Backward-compatible aliases to avoid 404 when client/server versions are mismatched.
+app.get('/api/user-permissions', requireAuth, requireAnyPermission(USER_PERMISSION.ADMIN_PANEL), listAdminUsersHandler);
+app.put('/api/user-permissions/:userId', requireAuth, requireAnyPermission(USER_PERMISSION.ADMIN_PANEL), updateUserPermissionsHandler);
+app.get('/api/users', requireAuth, requireAnyPermission(USER_PERMISSION.ADMIN_PANEL), listAdminUsersHandler);
+app.put('/api/users/:userId', requireAuth, requireAnyPermission(USER_PERMISSION.ADMIN_PANEL), updateUserPermissionsHandler);
+
+app.all('/api/proxy', requireAuth, requireAnyPermission(USER_PERMISSION.REQUEST_MANAGEMENT, USER_PERMISSION.WORKFLOW_MANAGEMENT), async (req, res) => {
   const { url, method = 'GET', headers = {}, body = null, params = {} } = req.body;
   
   if (!url) {
@@ -707,10 +1368,47 @@ const startServer = async () => {
   if (db) {
     const mongoState = getMongoState();
     try {
+      await Promise.all(BUILTIN_PERMISSION_POINTS.map((permission) =>
+        db.collection(PERMISSION_POINTS_COLLECTION).updateOne(
+          { _id: permission._id },
+          {
+            $set: { name: permission.name, updatedAt: new Date() },
+            $setOnInsert: { createdAt: new Date() },
+          },
+          { upsert: true }
+        )
+      ));
+      await Promise.all(BUILTIN_IDENTITIES.map((identity) =>
+        db.collection(USER_IDENTITIES_COLLECTION).updateOne(
+          { _id: identity._id },
+          {
+            $set: {
+              name: identity.name,
+              permissions: identity.permissions,
+              updatedAt: new Date(),
+            },
+            $setOnInsert: {
+              createdAt: new Date(),
+            },
+          },
+          { upsert: true }
+        )
+      ));
       await db.collection(USERS_COLLECTION).createIndex({ username: 1 }, { unique: true });
       await db.collection(USER_SESSIONS_COLLECTION).createIndex({ tokenHash: 1 }, { unique: true });
       await db.collection(USER_SESSIONS_COLLECTION).createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
       await db.collection(AUTH_CAPTCHAS_COLLECTION).createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+      await db.collection(USERS_COLLECTION).updateOne(
+        { username: 'admin' },
+        {
+          $set: {
+            role: USER_ROLE.ADMIN,
+            permissions: [...ADMIN_ALL_PERMISSIONS],
+            identityIds: [BUILTIN_IDENTITY_ID.ADMIN],
+            updatedAt: new Date(),
+          },
+        }
+      );
     } catch (error) {
       console.warn('[mongo] failed to create auth indexes:', error instanceof Error ? error.message : String(error));
     }
