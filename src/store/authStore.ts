@@ -12,6 +12,9 @@ import {
 export interface AuthUser {
   id: string;
   username: string;
+  nickname?: string;
+  avatarUrl?: string;
+  mustChangePassword?: boolean;
   lastLoginAt: string | null;
   role: UserRole;
   permissions: UserPermission[];
@@ -45,6 +48,7 @@ const normalizeAuthUser = (user: AuthUser): AuthUser => ({
   )
     ? [...ADMIN_ALL_PERMISSIONS]
     : (Array.isArray(user.permissions) && user.permissions.length > 0 ? user.permissions : [...DEFAULT_USER_PERMISSIONS]),
+  mustChangePassword: Boolean(user.mustChangePassword),
 });
 
 export const useAuthStore = create<AuthState>((set, get) => ({

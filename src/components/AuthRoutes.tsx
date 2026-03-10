@@ -22,6 +22,14 @@ export const getDefaultAuthorizedPath = (user: AuthUser | null): string => {
   if (isAdmin) {
     return '/admin';
   }
+  return getDefaultPlatformPath(user);
+};
+
+export const getDefaultPlatformPath = (user: AuthUser | null): string => {
+  if (!user) {
+    return '/login';
+  }
+  const permissions = Array.isArray(user.permissions) ? user.permissions : [];
   if (permissions.includes(USER_PERMISSIONS.REQUEST_MANAGEMENT)) {
     return '/requests';
   }

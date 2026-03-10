@@ -2,7 +2,6 @@ import React from 'react';
 import { Alert, Card, Checkbox, Layout, Space, Spin, Table, Tag, Typography, message } from 'antd';
 import type { TableColumnsType } from 'antd';
 import axios from 'axios';
-import { RouteSidebar } from '../components/RouteSidebar';
 import { fetchUserPermissions, updateUserPermissions, type UserPermissionItem } from '../api/auth';
 import { permissionLabelMap, USER_PERMISSIONS, type UserPermission } from '../constants/auth';
 
@@ -117,8 +116,6 @@ export const UserPermissionsPage: React.FC = () => {
   ];
 
   return (
-    <Layout className="h-screen bg-white overflow-hidden">
-      <RouteSidebar />
       <Content className="flex-1 min-h-0 overflow-auto bg-[#f5f5f5] p-6">
         <Card>
           <Title level={3} className="!mb-2">用户权限</Title>
@@ -140,6 +137,5 @@ export const UserPermissionsPage: React.FC = () => {
           )}
         </Card>
       </Content>
-    </Layout>
   );
 };

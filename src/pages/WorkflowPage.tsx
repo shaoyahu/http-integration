@@ -3,11 +3,9 @@ import { Layout, Button, Input, List, Space, Popconfirm, message, Empty, Tag, To
 import { PlayCircleOutlined, DeleteOutlined, EditOutlined, ImportOutlined, LeftOutlined, RightOutlined, PlusOutlined, MenuFoldOutlined, MenuUnfoldOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import { useWorkflowStore } from '../store/workflowStore';
-import { useRequestStore } from '../store/requestStore';
 import Editor from '@monaco-editor/react';
-import { RouteSidebar } from '../components/RouteSidebar';
 import { applyPathMapping, parseBodyValue, setNestedValue } from '../utils/requestPayload';
-import { fetchWorkflowState, healthCheck, proxyRequest, saveWorkflowState } from '../api/http';
+import { fetchWorkflowAvailableRequests, fetchWorkflowState, healthCheck, proxyRequest, saveWorkflowState, type WorkflowAvailableRequest } from '../api/http';
 
 const { Sider, Content } = Layout;
 
@@ -519,7 +517,7 @@ const buildFallbackPath = (
 
 export const WorkflowPage: React.FC = () => {
   const { workflows, selectedWorkflowId, setWorkflowState, addWorkflow, updateWorkflow, deleteWorkflow, setSelectedWorkflow, removeRequestFromWorkflow, updateWorkflowRequestInputValue } = useWorkflowStore();
-  const { requests } = useRequestStore();
+  const [availableRequests, setAvailableRequests] = useState<WorkflowAvailableRequest[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
   const [running, setRunning] = useState(false);
@@ -563,9 +561,12 @@ export const WorkflowPage: React.FC = () => {
   const lastSavedRef = React.useRef('');
   const saveTimerRef = React.useRef<number | null>(null);
   const latestSaveRequestIdRef = React.useRef(0);
+  const saveInFlightRef = React.useRef(false);
+  const queuedPayloadRef = React.useRef<{ workflows: typeof workflows; selectedWorkflowId: string | null } | null>(null);
 
   const selectedWorkflow = workflows.find((wf) => wf.id === selectedWorkflowId);
   const lastUpdated = selectedWorkflow?.updatedAt || selectedWorkflow?.createdAt;
+  const filteredAvailableRequests = availableRequests.filter((req) => (req.name || '').toLowerCase().includes(addSearch.toLowerCase()));
   const triggerPos = React.useMemo(
     () => ({ x: canvasSize.width / 2 - TRIGGER_WIDTH / 2, y: 12 }),
     [canvasSize]
@@ -585,9 +586,14 @@ export const WorkflowPage: React.FC = () => {
       if (serialized === lastSavedRef.current) {
         return;
       }
+      if (saveInFlightRef.current) {
+        queuedPayloadRef.current = payload;
+        return;
+      }
 
       const requestId = latestSaveRequestIdRef.current + 1;
       latestSaveRequestIdRef.current = requestId;
+      saveInFlightRef.current = true;
       setIsSavingState(true);
       setSaveError(null);
 
@@ -600,8 +606,17 @@ export const WorkflowPage: React.FC = () => {
         setSaveError(details);
         throw new Error(details);
       } finally {
+        saveInFlightRef.current = false;
         if (latestSaveRequestIdRef.current === requestId) {
           setIsSavingState(false);
+        }
+        if (queuedPayloadRef.current) {
+          const latestPayload = queuedPayloadRef.current;
+          queuedPayloadRef.current = null;
+          const latestSerialized = JSON.stringify(latestPayload);
+          if (latestSerialized !== lastSavedRef.current) {
+            await persistWorkflowState(latestPayload);
+          }
         }
       }
     },
@@ -613,11 +628,15 @@ export const WorkflowPage: React.FC = () => {
     const init = async () => {
       setIsLoadingState(true);
       try {
-        const data = await fetchWorkflowState();
+        const [data, requestOptions] = await Promise.all([
+          fetchWorkflowState(),
+          fetchWorkflowAvailableRequests(),
+        ]);
         if (cancelled) {
           return;
         }
         setWorkflowState(data.workflows, data.selectedWorkflowId);
+        setAvailableRequests(requestOptions);
         setSaveError(null);
       } catch (error) {
         const details = getErrorMessage(error);
@@ -661,7 +680,7 @@ export const WorkflowPage: React.FC = () => {
           const details = getErrorMessage(error);
           console.error('Failed to save workflows state to DB:', details);
         }
-      }, 500);
+      }, 1200);
     });
     return () => {
       unsubscribe();
@@ -1422,9 +1441,9 @@ const handleRunWorkflow = async () => {
     return base;
   };
 
-  const handleRequestSelect = (requestId: string) => {
+  const handleRequestSelect = (requestKey: string) => {
     if (!selectedWorkflow) return;
-    const request = requests.find((r) => r.id === requestId);
+    const request = availableRequests.find((r) => `${r.ownerUserId || 'self'}:${r.id}` === requestKey);
     if (request) {
       const newId = Date.now().toString();
       const nextRequest = {
@@ -1634,8 +1653,7 @@ const handleRunWorkflow = async () => {
   };
 
   return (
-    <Layout className="min-h-screen bg-white">
-      <RouteSidebar />
+    <>
       <Sider width={250} theme="light" collapsed={workflowSiderCollapsed} collapsedWidth={0} className="border-r border-gray-200 relative" style={{ overflow: 'visible' }}>
         {!workflowSiderCollapsed && (
           <>
@@ -2064,21 +2082,28 @@ const handleRunWorkflow = async () => {
                       className="mb-2"
                     />
                     <div className="max-h-[260px] overflow-auto space-y-1">
-                      {requests
-                        .filter((req) => (req.name || '').toLowerCase().includes(addSearch.toLowerCase()))
+                      {filteredAvailableRequests
                         .map((req) => (
                           <div
-                            key={req.id}
+                            key={`${req.ownerUserId || 'self'}:${req.id}`}
                             className="flex items-center gap-2 p-2 rounded hover:bg-gray-50 cursor-pointer"
-                            onClick={() => handleRequestSelect(req.id)}
+                            onClick={() => handleRequestSelect(`${req.ownerUserId || 'self'}:${req.id}`)}
                           >
                             <Tag color={methodColors[req.method] || 'default'} className="m-0">
                               {req.method}
                             </Tag>
                             <span className="text-sm text-gray-800 truncate">{req.name}</span>
+                            {req.isPublic && req.ownerUserId ? (
+                              <Tag className="m-0" color="gold">
+                                公开
+                              </Tag>
+                            ) : null}
+                            {req.ownerUsername ? (
+                              <span className="ml-auto text-xs text-gray-400 truncate max-w-[72px]">{req.ownerUsername}</span>
+                            ) : null}
                           </div>
                         ))}
-                      {requests.filter((req) => (req.name || '').toLowerCase().includes(addSearch.toLowerCase())).length === 0 && (
+                      {filteredAvailableRequests.length === 0 && (
                         <div className="text-sm text-gray-500 px-2 py-3">无匹配请求</div>
                       )}
                     </div>
@@ -2204,6 +2229,6 @@ const handleRunWorkflow = async () => {
           )}
         </Drawer>
       </Content>
-    </Layout>
+    </>
   );
 };

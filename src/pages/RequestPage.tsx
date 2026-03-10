@@ -3,7 +3,6 @@ import { Layout } from 'antd';
 import axios from 'axios';
 import { Sidebar } from '../components/Sidebar';
 import { RequestEditor } from '../components/RequestEditor';
-import { RouteSidebar } from '../components/RouteSidebar';
 import { fetchRequestState, saveRequestState } from '../api/http';
 import { useRequestStore } from '../store/requestStore';
 
@@ -35,6 +34,12 @@ export const RequestPage: React.FC = () => {
   const lastSavedRef = useRef('');
   const saveTimerRef = useRef<number | null>(null);
   const latestSaveRequestIdRef = useRef(0);
+  const saveInFlightRef = useRef(false);
+  const queuedPayloadRef = useRef<{
+    requests: ReturnType<typeof useRequestStore.getState>['requests'];
+    folders: ReturnType<typeof useRequestStore.getState>['folders'];
+    selectedRequestId: string | null
+  } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -50,9 +55,14 @@ export const RequestPage: React.FC = () => {
       if (serialized === lastSavedRef.current) {
         return;
       }
+      if (saveInFlightRef.current) {
+        queuedPayloadRef.current = payload;
+        return;
+      }
 
       const requestId = latestSaveRequestIdRef.current + 1;
       latestSaveRequestIdRef.current = requestId;
+      saveInFlightRef.current = true;
       setIsSaving(true);
       setSaveError(null);
 
@@ -65,8 +75,17 @@ export const RequestPage: React.FC = () => {
         setSaveError(details);
         throw new Error(details);
       } finally {
+        saveInFlightRef.current = false;
         if (latestSaveRequestIdRef.current === requestId) {
           setIsSaving(false);
+        }
+        if (queuedPayloadRef.current) {
+          const latestPayload = queuedPayloadRef.current;
+          queuedPayloadRef.current = null;
+          const latestSerialized = JSON.stringify(latestPayload);
+          if (latestSerialized !== lastSavedRef.current) {
+            await persistRequestState(latestPayload);
+          }
         }
       }
     },
@@ -140,7 +159,7 @@ export const RequestPage: React.FC = () => {
           const details = getErrorMessage(error);
           console.error('Failed to save requests state to DB:', details);
         }
-      }, 500);
+      }, 1200);
     });
 
     return () => {
@@ -152,8 +171,7 @@ export const RequestPage: React.FC = () => {
   }, [isLoading, persistRequestState]);
 
   return (
-    <Layout className="h-screen bg-white overflow-hidden">
-      <RouteSidebar />
+    <>
       <Sidebar
         isLoading={isLoading}
         isSaving={isSaving}
@@ -173,6 +191,6 @@ export const RequestPage: React.FC = () => {
           )}
         </div>
       </Content>
-    </Layout>
+    </>
   );
 };

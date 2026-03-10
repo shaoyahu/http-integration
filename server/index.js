@@ -36,8 +36,11 @@ const PERMISSION_POINTS_COLLECTION = 'permission_points';
 const USER_SESSIONS_COLLECTION = 'user_sessions';
 const AUTH_CAPTCHAS_COLLECTION = 'auth_captchas';
 const SESSION_EXPIRE_MS = 7 * 24 * 60 * 60 * 1000;
+const SESSION_TOUCH_INTERVAL_MS = 5 * 60 * 1000;
 const CAPTCHA_EXPIRE_MS = 5 * 60 * 1000;
 const SESSION_COOKIE_NAME = 'http_client_session';
+const DEFAULT_INITIAL_PASSWORD = '123456';
+const ADMIN_META_CACHE_MS = 15 * 1000;
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const USER_ROLE = {
   USER: 'user',
@@ -80,6 +83,33 @@ const BUILTIN_PERMISSION_POINTS = [
 ];
 
 const ALL_USER_PERMISSIONS = new Set(Object.values(USER_PERMISSION));
+const adminMetaCache = {
+  identityOverview: { value: null, expiresAt: 0 },
+  permissionPoints: { value: null, expiresAt: 0 },
+};
+
+const getCachedAdminMeta = (key) => {
+  const entry = adminMetaCache[key];
+  if (entry && entry.value && entry.expiresAt > Date.now()) {
+    return entry.value;
+  }
+  return null;
+};
+
+const setCachedAdminMeta = (key, value) => {
+  adminMetaCache[key] = {
+    value,
+    expiresAt: Date.now() + ADMIN_META_CACHE_MS,
+  };
+};
+
+const invalidateAdminMetaCache = (...keys) => {
+  keys.forEach((key) => {
+    if (adminMetaCache[key]) {
+      adminMetaCache[key] = { value: null, expiresAt: 0 };
+    }
+  });
+};
 
 const buildSessionCookie = (token) => {
   const maxAgeSeconds = Math.floor(SESSION_EXPIRE_MS / 1000);
@@ -305,14 +335,18 @@ const resolveUserAccessFromIdentity = async (db, user = {}, options = {}) => {
 
 const buildAuthUserPayload = (user = {}, access = null) => {
   const identity = access || normalizeUserIdentity(user);
+  const mustChangePassword = verifyPassword(DEFAULT_INITIAL_PASSWORD, user.passwordHash);
   return {
     id: user._id,
     username: user.username,
+    nickname: typeof user.nickname === 'string' ? user.nickname : '',
+    avatarUrl: typeof user.avatarUrl === 'string' ? user.avatarUrl : '',
     lastLoginAt: user.lastLoginAt || null,
     disabled: Boolean(user.disabled),
     role: identity.role,
     permissions: identity.permissions,
     identities: Array.isArray(identity.identities) ? identity.identities : [],
+    mustChangePassword,
   };
 };
 
@@ -387,6 +421,7 @@ const normalizeRequest = (req = {}, index = 0) => ({
   outputFields: Array.isArray(req.outputFields) ? req.outputFields : [],
   apiMappings: Array.isArray(req.apiMappings) ? req.apiMappings : [],
   folderId: typeof req.folderId === 'string' && req.folderId.trim() ? req.folderId : null,
+  isPublic: Boolean(req.isPublic),
 });
 
 const normalizeRequestFolder = (folder = {}, index = 0) => ({
@@ -529,14 +564,17 @@ const requireAuth = async (req, res, next) => {
       sessionId: session._id,
       user: buildAuthUserPayload(user, identity),
     };
-    await db.collection(USER_SESSIONS_COLLECTION).updateOne(
-      { _id: session._id },
-      {
-        $set: {
-          updatedAt: new Date(),
-        },
-      }
-    );
+    const lastSessionTouch = session.updatedAt ? new Date(session.updatedAt).getTime() : 0;
+    if (Date.now() - lastSessionTouch >= SESSION_TOUCH_INTERVAL_MS) {
+      await db.collection(USER_SESSIONS_COLLECTION).updateOne(
+        { _id: session._id },
+        {
+          $set: {
+            updatedAt: new Date(),
+          },
+        }
+      );
+    }
     return next();
   } catch (error) {
     return res.status(500).json({
@@ -739,6 +777,82 @@ app.post('/api/auth/logout', requireAuth, async (req, res) => {
   }
 });
 
+app.put('/api/auth/profile', requireAuth, async (req, res) => {
+  const db = await getDbOrReconnect();
+  if (!db) {
+    return res.status(503).json(mongoUnavailableResponse());
+  }
+  const nickname = typeof req.body?.nickname === 'string' ? req.body.nickname.trim() : null;
+  const avatarUrl = typeof req.body?.avatarUrl === 'string' ? req.body.avatarUrl.trim() : null;
+  const currentPassword = typeof req.body?.currentPassword === 'string' ? req.body.currentPassword : '';
+  const newPassword = typeof req.body?.newPassword === 'string' ? req.body.newPassword : '';
+  const isChangingPassword = Boolean(currentPassword || newPassword);
+  const isDataImage = typeof avatarUrl === 'string' && avatarUrl.startsWith('data:image/');
+  const avatarMaxLength = isDataImage ? 3 * 1024 * 1024 : 2048;
+
+  if (nickname !== null && nickname.length > 32) {
+    return res.status(400).json({ error: '昵称长度需在 32 个字符以内', code: 'NICKNAME_TOO_LONG' });
+  }
+  if (avatarUrl !== null && avatarUrl.length > avatarMaxLength) {
+    return res.status(400).json({
+      error: isDataImage ? '头像图片过大，请上传更小的图片' : '头像地址长度过长',
+      code: 'AVATAR_URL_TOO_LONG',
+    });
+  }
+  if (isChangingPassword) {
+    if (!currentPassword) {
+      return res.status(400).json({ error: '请输入当前密码', code: 'CURRENT_PASSWORD_REQUIRED' });
+    }
+    if (!newPassword || newPassword.length < 6) {
+      return res.status(400).json({ error: '新密码至少为 6 位', code: 'NEW_PASSWORD_TOO_SHORT' });
+    }
+  }
+  if (nickname === null && avatarUrl === null && !isChangingPassword) {
+    return res.status(400).json({ error: '没有可更新的字段', code: 'NO_PROFILE_UPDATE_FIELDS' });
+  }
+
+  try {
+    const currentUser = await db.collection(USERS_COLLECTION).findOne({ _id: req.auth.user.id });
+    if (!currentUser) {
+      return res.status(404).json({ error: '用户不存在', code: 'USER_NOT_FOUND' });
+    }
+    if (isChangingPassword) {
+      const isPasswordCorrect = verifyPassword(currentPassword, currentUser.passwordHash);
+      if (!isPasswordCorrect) {
+        return res.status(401).json({ error: '当前密码错误', code: 'CURRENT_PASSWORD_INCORRECT' });
+      }
+    }
+
+    const updates = { updatedAt: new Date() };
+    if (nickname !== null) {
+      updates.nickname = nickname;
+    }
+    if (avatarUrl !== null) {
+      updates.avatarUrl = avatarUrl;
+    }
+    if (isChangingPassword) {
+      updates.passwordHash = hashPassword(newPassword);
+    }
+
+    await db.collection(USERS_COLLECTION).updateOne(
+      { _id: req.auth.user.id },
+      { $set: updates }
+    );
+
+    const refreshedUser = await db.collection(USERS_COLLECTION).findOne({ _id: req.auth.user.id });
+    if (!refreshedUser) {
+      return res.status(404).json({ error: '用户不存在', code: 'USER_NOT_FOUND' });
+    }
+    const access = await resolveUserAccessFromIdentity(db, refreshedUser);
+    return res.json({ user: buildAuthUserPayload(refreshedUser, access) });
+  } catch (error) {
+    return res.status(500).json({
+      error: '更新个人信息失败',
+      details: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
 app.get('/api/requests-state', requireAuth, requireAnyPermission(USER_PERMISSION.REQUEST_MANAGEMENT), async (req, res) => {
   const db = await getDbOrReconnect();
   if (!db) {
@@ -747,11 +861,10 @@ app.get('/api/requests-state', requireAuth, requireAnyPermission(USER_PERMISSION
   try {
     const userDocId = getUserStateDocId(req);
     const existing = await db.collection(REQUEST_STATE_COLLECTION).findOne({ _id: userDocId });
-    const fallbackExisting = existing || await db.collection(REQUEST_STATE_COLLECTION).findOne({ _id: REQUEST_STATE_DOC_ID });
-    if (!fallbackExisting) {
+    if (!existing) {
       return res.json({ requests: [], folders: [], selectedRequestId: null });
     }
-    const { requests, folders, selectedRequestId } = normalizeRequestState(fallbackExisting);
+    const { requests, folders, selectedRequestId } = normalizeRequestState(existing);
     return res.json({ requests, folders, selectedRequestId });
   } catch (error) {
     res.status(500).json({
@@ -799,12 +912,58 @@ app.get('/api/requests', requireAuth, requireAnyPermission(USER_PERMISSION.REQUE
   try {
     const userDocId = getUserStateDocId(req);
     const existing = await db.collection(REQUEST_STATE_COLLECTION).findOne({ _id: userDocId });
-    const fallbackExisting = existing || await db.collection(REQUEST_STATE_COLLECTION).findOne({ _id: REQUEST_STATE_DOC_ID });
-    const { requests } = normalizeRequestState(fallbackExisting || {});
+    const { requests } = normalizeRequestState(existing || {});
     res.json({ requests });
   } catch (error) {
     res.status(500).json({
       error: 'Failed to query requests',
+      details: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+app.get('/api/workflow-requests', requireAuth, requireAnyPermission(USER_PERMISSION.WORKFLOW_MANAGEMENT), async (req, res) => {
+  const db = await getDbOrReconnect();
+  if (!db) {
+    return res.status(503).json(mongoUnavailableResponse());
+  }
+  try {
+    const userDocId = getUserStateDocId(req);
+    const [currentUserState, allUsers] = await Promise.all([
+      db.collection(REQUEST_STATE_COLLECTION).findOne({ _id: userDocId }),
+      db.collection(USERS_COLLECTION)
+        .find({}, { projection: { username: 1 } })
+        .toArray(),
+    ]);
+    const usernameMap = new Map(allUsers.map((user) => [String(user._id), user.username]));
+    const allRequestStates = await db.collection(REQUEST_STATE_COLLECTION)
+      .find({ _id: { $ne: REQUEST_STATE_DOC_ID } })
+      .toArray();
+
+    const ownRequests = normalizeRequestState(currentUserState || {}).requests.map((request) => ({
+      ...request,
+      ownerUserId: userDocId,
+      ownerUsername: req.auth.user.username,
+    }));
+
+    const publicRequests = allRequestStates
+      .filter((doc) => String(doc._id) !== userDocId)
+      .flatMap((doc) => {
+        const ownerUserId = String(doc._id);
+        const ownerUsername = usernameMap.get(ownerUserId) || '未知用户';
+        return normalizeRequestState(doc).requests
+          .filter((request) => request.isPublic)
+          .map((request) => ({
+            ...request,
+            ownerUserId,
+            ownerUsername,
+          }));
+      });
+
+    return res.json({ requests: [...ownRequests, ...publicRequests] });
+  } catch (error) {
+    return res.status(500).json({
+      error: 'Failed to load workflow requests',
       details: error instanceof Error ? error.message : String(error),
     });
   }
@@ -913,6 +1072,11 @@ const listAdminUsersHandler = async (req, res) => {
     return res.status(503).json(mongoUnavailableResponse());
   }
   try {
+    const keyword = typeof req.query?.keyword === 'string' ? req.query.keyword.trim() : '';
+    const identityId = typeof req.query?.identityId === 'string' ? req.query.identityId.trim() : '';
+    const lastLoginFilter = typeof req.query?.lastLoginFilter === 'string' ? req.query.lastLoginFilter.trim() : 'all';
+    const page = Math.max(1, Number.parseInt(String(req.query?.page || '1'), 10) || 1);
+    const pageSize = Math.min(100, Math.max(1, Number.parseInt(String(req.query?.pageSize || '10'), 10) || 10));
     const identities = await db.collection(USER_IDENTITIES_COLLECTION)
       .find({}, { projection: { name: 1, permissions: 1 } })
       .toArray();
@@ -921,8 +1085,7 @@ const listAdminUsersHandler = async (req, res) => {
       .find({}, { projection: { username: 1, role: 1, permissions: 1, identityIds: 1, disabled: 1, lastLoginAt: 1 } })
       .sort({ createdAt: -1 })
       .toArray();
-    return res.json({
-      users: users.map((user) => {
+    const allItems = users.map((user) => {
         let identityIds = normalizeIdentityIds(user.identityIds, { fallbackToDefault: false });
         if (identityIds.length === 0) {
           identityIds = resolveIdentityByLegacyUser(user);
@@ -941,7 +1104,32 @@ const listAdminUsersHandler = async (req, res) => {
           disabled: Boolean(user.disabled),
           lastLoginAt: user.lastLoginAt || null,
         };
-      }),
+      });
+
+    const now = Date.now();
+    const filteredItems = allItems.filter((user) => {
+      const matchesKeyword = !keyword || String(user.username || '').toLowerCase().includes(keyword.toLowerCase());
+      const matchesIdentity = !identityId || (Array.isArray(user.identityIds) && user.identityIds.includes(identityId));
+      let matchesLastLogin = true;
+      if (lastLoginFilter === 'never') {
+        matchesLastLogin = !user.lastLoginAt;
+      } else if (lastLoginFilter === '7d') {
+        matchesLastLogin = Boolean(user.lastLoginAt) && new Date(user.lastLoginAt).getTime() >= now - 7 * 24 * 60 * 60 * 1000;
+      } else if (lastLoginFilter === '30d') {
+        matchesLastLogin = Boolean(user.lastLoginAt) && new Date(user.lastLoginAt).getTime() >= now - 30 * 24 * 60 * 60 * 1000;
+      }
+      return matchesKeyword && matchesIdentity && matchesLastLogin;
+    });
+
+    const total = filteredItems.length;
+    const start = (page - 1) * pageSize;
+    const pagedItems = filteredItems.slice(start, start + pageSize);
+
+    return res.json({
+      users: pagedItems,
+      total,
+      page,
+      pageSize,
     });
   } catch (error) {
     return res.status(500).json({
@@ -957,40 +1145,59 @@ const listIdentityOverviewHandler = async (req, res) => {
     return res.status(503).json(mongoUnavailableResponse());
   }
   try {
+    const cached = getCachedAdminMeta('identityOverview');
+    if (cached) {
+      return res.json(cached);
+    }
     const identities = await db.collection(USER_IDENTITIES_COLLECTION)
       .find({}, { projection: { name: 1, permissions: 1 } })
       .sort({ createdAt: 1 })
       .toArray();
-    const identityMap = new Map(identities.map((item) => [String(item._id), item]));
-    const users = await db.collection(USERS_COLLECTION)
-      .find({}, { projection: { username: 1, role: 1, permissions: 1, identityIds: 1 } })
-      .toArray();
+    const counts = await db.collection(USERS_COLLECTION).aggregate([
+      {
+        $project: {
+          effectiveIdentityIds: {
+            $cond: [
+              { $eq: [{ $toLower: '$username' }, 'admin'] },
+              [BUILTIN_IDENTITY_ID.ADMIN],
+              {
+                $cond: [
+                  { $gt: [{ $size: { $ifNull: ['$identityIds', []] } }, 0] },
+                  '$identityIds',
+                  {
+                    $cond: [
+                      {
+                        $or: [
+                          { $eq: ['$role', USER_ROLE.ADMIN] },
+                          { $eq: ['$role', 'ADMIN'] },
+                          { $eq: ['$role', '管理员'] },
+                          { $in: [USER_PERMISSION.ADMIN_PANEL, { $ifNull: ['$permissions', []] }] },
+                        ],
+                      },
+                      [BUILTIN_IDENTITY_ID.ADMIN],
+                      [BUILTIN_IDENTITY_ID.USER],
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      },
+      { $unwind: '$effectiveIdentityIds' },
+      { $group: { _id: '$effectiveIdentityIds', count: { $sum: 1 } } },
+    ]).toArray();
+    const countMap = new Map(counts.map((item) => [String(item._id), item.count]));
 
-    const countMap = new Map(identities.map((identity) => [String(identity._id), 0]));
-    users.forEach((user) => {
-      let identityIds = normalizeIdentityIds(user.identityIds, { fallbackToDefault: false });
-      if (identityIds.length === 0) {
-        identityIds = resolveIdentityByLegacyUser(user);
-      }
-      if (typeof user.username === 'string' && user.username.trim().toLowerCase() === 'admin') {
-        identityIds = [BUILTIN_IDENTITY_ID.ADMIN];
-      }
-      identityIds
-        .filter((id, index, arr) => arr.indexOf(id) === index)
-        .forEach((id) => {
-          if (countMap.has(id)) {
-            countMap.set(id, (countMap.get(id) || 0) + 1);
-          }
-        });
-    });
-
-    const items = Array.from(identityMap.entries()).map(([id, identityDoc]) => ({
-      id,
-      name: typeof identityDoc.name === 'string' ? identityDoc.name : id,
+    const items = identities.map((identityDoc) => ({
+      id: String(identityDoc._id),
+      name: typeof identityDoc.name === 'string' ? identityDoc.name : String(identityDoc._id),
       permissions: normalizePermissionIds(identityDoc.permissions, { fallbackToDefault: false }),
-      userCount: countMap.get(id) || 0,
+      userCount: countMap.get(String(identityDoc._id)) || 0,
     }));
-    return res.json({ identities: items });
+    const payload = { identities: items };
+    setCachedAdminMeta('identityOverview', payload);
+    return res.json(payload);
   } catch (error) {
     return res.status(500).json({
       error: 'Failed to load identities',
@@ -1005,16 +1212,22 @@ const listPermissionPointsHandler = async (req, res) => {
     return res.status(503).json(mongoUnavailableResponse());
   }
   try {
+    const cached = getCachedAdminMeta('permissionPoints');
+    if (cached) {
+      return res.json(cached);
+    }
     const permissions = await db.collection(PERMISSION_POINTS_COLLECTION)
       .find({}, { projection: { name: 1 } })
       .sort({ _id: 1 })
       .toArray();
-    return res.json({
+    const payload = {
       permissions: permissions.map((permission) => ({
         id: String(permission._id),
         name: permission.name || String(permission._id),
       })),
-    });
+    };
+    setCachedAdminMeta('permissionPoints', payload);
+    return res.json(payload);
   } catch (error) {
     return res.status(500).json({
       error: 'Failed to load permissions',
@@ -1059,6 +1272,7 @@ const createIdentityHandler = async (req, res) => {
       createdAt: new Date(),
       updatedAt: new Date(),
     });
+    invalidateAdminMetaCache('identityOverview', 'permissionPoints');
     return res.json({ identity: { id, name, permissions: permissionIds } });
   } catch (error) {
     return res.status(500).json({
@@ -1099,6 +1313,7 @@ const updateIdentityHandler = async (req, res) => {
     if (!identity) {
       return res.status(404).json({ error: 'Identity not found', code: 'IDENTITY_NOT_FOUND' });
     }
+    invalidateAdminMetaCache('identityOverview', 'permissionPoints');
     return res.json({
       identity: {
         id: String(identity._id),
@@ -1140,10 +1355,9 @@ const createAdminUserHandler = async (req, res) => {
     }
     const access = await resolveUserAccessFromIdentity(db, { username, identityIds }, { fallbackToDefault: false });
     const now = new Date();
-    const temporaryPassword = crypto.randomBytes(12).toString('hex');
     const result = await db.collection(USERS_COLLECTION).insertOne({
       username,
-      passwordHash: hashPassword(temporaryPassword),
+      passwordHash: hashPassword(DEFAULT_INITIAL_PASSWORD),
       identityIds: access.identityIds,
       role: access.role,
       permissions: access.permissions,
@@ -1152,6 +1366,7 @@ const createAdminUserHandler = async (req, res) => {
       createdAt: now,
       updatedAt: now,
     });
+    invalidateAdminMetaCache('identityOverview');
     return res.json({
       user: {
         id: result.insertedId,
@@ -1182,6 +1397,17 @@ const updateAdminUserStatusHandler = async (req, res) => {
   const disabled = Boolean(req.body?.disabled);
   const userObjectId = new ObjectId(rawUserId);
   try {
+    const existingUser = await db.collection(USERS_COLLECTION).findOne(
+      { _id: userObjectId },
+      { projection: { username: 1 } }
+    );
+    if (!existingUser) {
+      return res.status(404).json({ error: 'User not found', code: 'USER_NOT_FOUND' });
+    }
+    if (typeof existingUser.username === 'string' && existingUser.username.trim().toLowerCase() === 'admin' && disabled) {
+      return res.status(400).json({ error: 'admin 用户禁止被禁用', code: 'ADMIN_CANNOT_BE_DISABLED' });
+    }
+
     const result = await db.collection(USERS_COLLECTION).findOneAndUpdate(
       { _id: userObjectId },
       { $set: { disabled, updatedAt: new Date() } },
@@ -1192,6 +1418,7 @@ const updateAdminUserStatusHandler = async (req, res) => {
       return res.status(404).json({ error: 'User not found', code: 'USER_NOT_FOUND' });
     }
     const access = await resolveUserAccessFromIdentity(db, user, { fallbackToDefault: true });
+    invalidateAdminMetaCache('identityOverview');
     return res.json({
       user: {
         id: user._id,
@@ -1205,6 +1432,84 @@ const updateAdminUserStatusHandler = async (req, res) => {
   } catch (error) {
     return res.status(500).json({
       error: 'Failed to update user status',
+      details: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+const updateAdminUserIdentitiesHandler = async (req, res) => {
+  const db = await getDbOrReconnect();
+  if (!db) {
+    return res.status(503).json(mongoUnavailableResponse());
+  }
+  const rawUserId = typeof req.params.userId === 'string' ? req.params.userId.trim() : '';
+  if (!ObjectId.isValid(rawUserId)) {
+    return res.status(400).json({ error: 'Invalid userId', code: 'INVALID_USER_ID' });
+  }
+  const userObjectId = new ObjectId(rawUserId);
+  const identityIds = normalizeIdentityIds(req.body?.identityIds, { fallbackToDefault: false });
+  if (identityIds.length === 0) {
+    return res.status(400).json({ error: 'At least one identity is required', code: 'IDENTITY_REQUIRED' });
+  }
+  try {
+    const currentUser = await db.collection(USERS_COLLECTION).findOne(
+      { _id: userObjectId },
+      { projection: { username: 1, identityIds: 1, disabled: 1, lastLoginAt: 1 } }
+    );
+    if (!currentUser) {
+      return res.status(404).json({ error: 'User not found', code: 'USER_NOT_FOUND' });
+    }
+    if (
+      typeof currentUser.username === 'string'
+      && currentUser.username.trim().toLowerCase() === 'admin'
+      && !identityIds.includes(BUILTIN_IDENTITY_ID.ADMIN)
+    ) {
+      return res.status(400).json({ error: 'admin 用户不能移除管理员身份', code: 'ADMIN_IDENTITY_REQUIRED' });
+    }
+
+    const identities = await db.collection(USER_IDENTITIES_COLLECTION)
+      .find({ _id: { $in: identityIds } }, { projection: { _id: 1 } })
+      .toArray();
+    if (identities.length !== identityIds.length) {
+      return res.status(400).json({ error: 'Invalid identityIds', code: 'INVALID_IDENTITY_IDS' });
+    }
+
+    const access = await resolveUserAccessFromIdentity(
+      db,
+      { username: currentUser.username, identityIds },
+      { fallbackToDefault: false }
+    );
+
+    const result = await db.collection(USERS_COLLECTION).findOneAndUpdate(
+      { _id: userObjectId },
+      {
+        $set: {
+          identityIds: access.identityIds,
+          role: access.role,
+          permissions: access.permissions,
+          updatedAt: new Date(),
+        },
+      },
+      { returnDocument: 'after', projection: { username: 1, identityIds: 1, disabled: 1, lastLoginAt: 1 } }
+    );
+    const updatedUser = result?.value || result;
+    if (!updatedUser) {
+      return res.status(404).json({ error: 'User not found', code: 'USER_NOT_FOUND' });
+    }
+    invalidateAdminMetaCache('identityOverview');
+    return res.json({
+      user: {
+        id: updatedUser._id,
+        username: updatedUser.username,
+        identityIds: access.identityIds,
+        identities: access.identities.map((item) => item.name),
+        disabled: Boolean(updatedUser.disabled),
+        lastLoginAt: updatedUser.lastLoginAt || null,
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({
+      error: 'Failed to update user identities',
       details: error instanceof Error ? error.message : String(error),
     });
   }
@@ -1265,6 +1570,7 @@ const updateUserPermissionsHandler = async (req, res) => {
     );
     const user = result?.value || result;
     if (!user) return res.status(404).json({ error: 'User not found', code: 'USER_NOT_FOUND' });
+    invalidateAdminMetaCache('identityOverview');
     return res.json({
       user: {
         id: user._id,
@@ -1289,6 +1595,7 @@ app.put('/api/admin/user-permissions/:userId', requireAuth, requireAnyPermission
 app.get('/api/admin/users', requireAuth, requireAnyPermission(USER_PERMISSION.ADMIN_PANEL), listAdminUsersHandler);
 app.put('/api/admin/users/:userId', requireAuth, requireAnyPermission(USER_PERMISSION.ADMIN_PANEL), updateUserPermissionsHandler);
 app.post('/api/admin/users', requireAuth, requireAnyPermission(USER_PERMISSION.ADMIN_PANEL), createAdminUserHandler);
+app.put('/api/admin/users/:userId/identities', requireAuth, requireAnyPermission(USER_PERMISSION.ADMIN_PANEL), updateAdminUserIdentitiesHandler);
 app.put('/api/admin/users/:userId/status', requireAuth, requireAnyPermission(USER_PERMISSION.ADMIN_PANEL), updateAdminUserStatusHandler);
 app.get('/api/admin/identities', requireAuth, requireAnyPermission(USER_PERMISSION.ADMIN_PANEL), listIdentityOverviewHandler);
 app.post('/api/admin/identities', requireAuth, requireAnyPermission(USER_PERMISSION.ADMIN_PANEL), createIdentityHandler);

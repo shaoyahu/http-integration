@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Alert, Button, Card, Form, Input, Typography } from 'antd';
+import { Alert, Button, Card, Form, Input, Typography, message } from 'antd';
 import { Link, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { loginUser } from '../api/auth';
@@ -37,6 +37,9 @@ export const LoginPage: React.FC = () => {
         password: values.password,
       });
       setSession(result.user);
+      if (result.user.mustChangePassword) {
+        message.warning('当前密码为初始密码 123456，请尽快在个人信息中修改密码');
+      }
       navigate(getDefaultAuthorizedPath(result.user), { replace: true });
     } catch (error) {
       setErrorMessage(parseLoginError(error));

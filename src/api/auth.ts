@@ -5,6 +5,9 @@ import axios from 'axios';
 export interface AuthUser {
   id: string;
   username: string;
+  nickname?: string;
+  avatarUrl?: string;
+  mustChangePassword?: boolean;
   lastLoginAt: string | null;
   role: UserRole;
   permissions: UserPermission[];
@@ -46,6 +49,16 @@ export const logoutUser = async () => {
   return response.data;
 };
 
+export const updateCurrentUserProfile = async (payload: {
+  nickname?: string;
+  avatarUrl?: string;
+  currentPassword?: string;
+  newPassword?: string;
+}) => {
+  const response = await api.put<{ user: AuthUser }>('/auth/profile', payload);
+  return response.data.user;
+};
+
 export interface UserPermissionItem {
   id: string;
   username: string;
@@ -62,6 +75,21 @@ export interface AdminUserItem {
   identities: string[];
   disabled?: boolean;
   lastLoginAt: string | null;
+}
+
+export interface AdminUserQuery {
+  keyword?: string;
+  identityId?: string;
+  lastLoginFilter?: 'all' | 'never' | '7d' | '30d';
+  page?: number;
+  pageSize?: number;
+}
+
+export interface AdminUserListResponse {
+  users: AdminUserItem[];
+  total: number;
+  page: number;
+  pageSize: number;
 }
 
 export interface AdminIdentityItem {
@@ -127,9 +155,9 @@ export const updateUserPermissions = async (userId: string, permissions: UserPer
   ], permissions);
 };
 
-export const fetchAdminUsers = async () => {
-  const response = await api.get<{ users: AdminUserItem[] }>('/admin/users');
-  return response.data.users;
+export const fetchAdminUsers = async (query: AdminUserQuery = {}) => {
+  const response = await api.get<AdminUserListResponse>('/admin/users', { params: query });
+  return response.data;
 };
 
 export const fetchAdminIdentities = async () => {
@@ -149,6 +177,11 @@ export const createAdminUser = async (payload: { username: string; identityIds: 
 
 export const updateAdminUserStatus = async (userId: string, disabled: boolean) => {
   const response = await api.put<{ user: AdminUserItem }>(`/admin/users/${encodeURIComponent(userId)}/status`, { disabled });
+  return response.data.user;
+};
+
+export const updateAdminUserIdentities = async (userId: string, identityIds: string[]) => {
+  const response = await api.put<{ user: AdminUserItem }>(`/admin/users/${encodeURIComponent(userId)}/identities`, { identityIds });
   return response.data.user;
 };
 

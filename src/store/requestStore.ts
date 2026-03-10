@@ -44,6 +44,9 @@ export interface HttpRequest {
   outputFields: OutputField[]
   apiMappings: ApiMapping[]
   folderId?: string | null
+  isPublic?: boolean
+  ownerUserId?: string
+  ownerUsername?: string
 }
 
 interface RequestStore {
@@ -63,7 +66,7 @@ interface RequestStore {
   setSelectedRequest: (id: string | null) => void
 }
 
-const DEFAULT_REQUEST_ID = 'default-feishu-callback'
+export const DEFAULT_REQUEST_ID = 'default-feishu-callback'
 const DEFAULT_REQUEST: HttpRequest = {
   id: DEFAULT_REQUEST_ID,
   name: '默认请求示例',
@@ -77,6 +80,7 @@ const DEFAULT_REQUEST: HttpRequest = {
   outputFields: [],
   apiMappings: [],
   folderId: null,
+  isPublic: false,
 }
 
 const createRequestTemplate = (index: number, folderId: string | null = null): HttpRequest => ({
@@ -92,6 +96,7 @@ const createRequestTemplate = (index: number, folderId: string | null = null): H
   outputFields: [],
   apiMappings: [],
   folderId,
+  isPublic: false,
 })
 
 const createFolderTemplate = (index: number): RequestFolder => ({
@@ -113,6 +118,9 @@ const normalizeRequest = (req: Partial<HttpRequest>, fallbackIndex: number): Htt
   outputFields: Array.isArray(req.outputFields) ? req.outputFields : [],
   apiMappings: Array.isArray(req.apiMappings) ? req.apiMappings : [],
   folderId: typeof req.folderId === 'string' && req.folderId.trim() ? req.folderId : null,
+  isPublic: Boolean(req.isPublic),
+  ownerUserId: typeof req.ownerUserId === 'string' ? req.ownerUserId : undefined,
+  ownerUsername: typeof req.ownerUsername === 'string' ? req.ownerUsername : undefined,
 })
 
 const normalizeFolder = (folder: Partial<RequestFolder>, fallbackIndex: number): RequestFolder => ({

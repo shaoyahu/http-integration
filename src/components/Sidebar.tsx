@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Layout, Popconfirm, message, Input, Tag, Select, Button, Dropdown } from 'antd';
+import { Layout, Popconfirm, message, Input, Tag, Select, Button, Dropdown, Tooltip } from 'antd';
 import type { MenuProps } from 'antd';
 import {
   PlusOutlined,
@@ -9,12 +9,14 @@ import {
   FolderOpenOutlined,
   FolderOutlined,
   HolderOutlined,
+  MoreOutlined,
   RightOutlined,
   DownOutlined,
+  ShareAltOutlined,
   VerticalAlignTopOutlined,
   VerticalAlignBottomOutlined,
 } from '@ant-design/icons';
-import { useRequestStore, type HttpRequest } from '../store/requestStore';
+import { DEFAULT_REQUEST_ID, useRequestStore, type HttpRequest } from '../store/requestStore';
 import {
   DndContext,
   closestCenter,
@@ -64,6 +66,7 @@ interface SortableItemProps {
   onDelete: (id: string) => void;
   onSelect: (id: string) => void;
   onMoveToFolder: (requestId: string, folderId: string | null) => void;
+  onTogglePublic: (requestId: string, nextIsPublic: boolean) => void;
   setEditingId: (id: string | null) => void;
   setEditingName: (name: string) => void;
 }
@@ -80,6 +83,7 @@ function SortableItem({
   onDelete,
   onSelect,
   onMoveToFolder,
+  onTogglePublic,
   setEditingId,
   setEditingName,
 }: SortableItemProps) {
@@ -97,6 +101,33 @@ function SortableItem({
     transition,
     opacity: isDragging ? 0.5 : 1,
   };
+  const isDefaultRequest = req.id === DEFAULT_REQUEST_ID;
+
+  const actionMenuItems: MenuProps['items'] = [
+    {
+      key: 'toggle-public',
+      label: req.isPublic ? '取消公开' : '公开给所有人',
+      icon: <ShareAltOutlined />,
+      disabled: isDefaultRequest,
+    },
+    {
+      key: 'move-folder',
+      label: '移动到文件夹',
+      icon: <FolderOpenOutlined />,
+      children: folderMenuItems,
+    },
+    {
+      key: 'edit',
+      label: '编辑名称',
+      icon: <EditOutlined />,
+    },
+    {
+      key: 'delete',
+      label: '删除请求',
+      icon: <DeleteOutlined />,
+      danger: true,
+    },
+  ];
 
   return (
     <div
@@ -132,28 +163,37 @@ function SortableItem({
           <Dropdown
             trigger={['click']}
             menu={{
-              items: folderMenuItems,
-              onClick: ({ key }) => onMoveToFolder(req.id, key === '__ungrouped' ? null : String(key)),
+              items: actionMenuItems,
+              onClick: ({ key }) => {
+                if (key === 'toggle-public') {
+                  if (isDefaultRequest) {
+                    return;
+                  }
+                  onTogglePublic(req.id, !req.isPublic);
+                  return;
+                }
+                if (key === 'edit') {
+                  setEditingId(req.id);
+                  setEditingName(req.name);
+                  return;
+                }
+                if (key === 'delete') {
+                  onDelete(req.id);
+                  return;
+                }
+                if (key === '__ungrouped' || folderMenuItems?.some((item) => item?.key === key)) {
+                  onMoveToFolder(req.id, key === '__ungrouped' ? null : String(key));
+                }
+              },
             }}
           >
-            <FolderOpenOutlined
-              className="ml-2 text-gray-400 hover:text-blue-500"
-              onClick={(e) => e.stopPropagation()}
-            />
+            <Tooltip title="更多操作">
+              <MoreOutlined
+                className="ml-2 text-gray-400 hover:text-blue-500"
+                onClick={(e) => e.stopPropagation()}
+              />
+            </Tooltip>
           </Dropdown>
-          <EditOutlined
-            className="ml-2 text-gray-400 hover:text-blue-500"
-            onClick={(e) => onEdit(e, req)}
-          />
-          <Popconfirm
-            title="删除请求"
-            description="确定要删除这个请求吗？"
-            onConfirm={() => onDelete(req.id)}
-            okText="确定"
-            cancelText="取消"
-          >
-            <DeleteOutlined className="ml-2 text-gray-400 hover:text-red-500" />
-          </Popconfirm>
         </div>
       </div>
     </div>
@@ -279,6 +319,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const handleMoveRequestToFolder = (requestId: string, folderId: string | null) => {
     moveRequestToFolder(requestId, folderId);
     message.success(folderId ? '请求已移动到文件夹' : '请求已移动到未分组');
+  };
+
+  const handleToggleRequestPublic = (requestId: string, nextIsPublic: boolean) => {
+    updateRequest(requestId, { isPublic: nextIsPublic });
+    message.success(nextIsPublic ? '请求已公开，其他用户可在工作流中使用' : '请求已取消公开');
   };
 
   const getFolderRequests = (folderId: string) =>
@@ -494,6 +539,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         }}
                         onSelect={setSelectedRequest}
                         onMoveToFolder={handleMoveRequestToFolder}
+                        onTogglePublic={handleToggleRequestPublic}
                         setEditingId={setEditingId}
                         setEditingName={setEditingName}
                       />
@@ -581,6 +627,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                     }}
                                     onSelect={setSelectedRequest}
                                     onMoveToFolder={handleMoveRequestToFolder}
+                                    onTogglePublic={handleToggleRequestPublic}
                                     setEditingId={setEditingId}
                                     setEditingName={setEditingName}
                                   />

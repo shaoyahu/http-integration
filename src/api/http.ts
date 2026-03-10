@@ -10,6 +10,14 @@ export const api = axios.create({
   withCredentials: true,
 });
 
+let healthCheckCache:
+  | {
+      timestamp: number;
+      data: any;
+      promise: Promise<any> | null;
+    }
+  | null = null;
+
 export interface ProxyRequest {
   url: string;
   method: string;
@@ -24,8 +32,30 @@ export const proxyRequest = async (proxyReq: ProxyRequest) => {
 };
 
 export const healthCheck = async () => {
-  const response = await api.get('/health');
-  return response.data;
+  const now = Date.now();
+  if (healthCheckCache?.data && now - healthCheckCache.timestamp < 10000) {
+    return healthCheckCache.data;
+  }
+  if (healthCheckCache?.promise) {
+    return await healthCheckCache.promise;
+  }
+  const promise = api.get('/health').then((response) => {
+    healthCheckCache = {
+      timestamp: Date.now(),
+      data: response.data,
+      promise: null,
+    };
+    return response.data;
+  }).catch((error) => {
+    healthCheckCache = null;
+    throw error;
+  });
+  healthCheckCache = {
+    timestamp: now,
+    data: null,
+    promise,
+  };
+  return await promise;
 };
 
 export interface RequestStatePayload {
@@ -37,6 +67,12 @@ export interface RequestStatePayload {
 export interface WorkflowStatePayload {
   workflows: Workflow[];
   selectedWorkflowId: string | null;
+}
+
+export interface WorkflowAvailableRequest extends HttpRequest {
+  ownerUserId?: string;
+  ownerUsername?: string;
+  isPublic?: boolean;
 }
 
 export interface AdminStatsPayload {
@@ -75,6 +111,12 @@ export const fetchWorkflowState = async (): Promise<WorkflowStatePayload> => {
 export const saveWorkflowState = async (payload: WorkflowStatePayload) => {
   const response = await api.put('/workflows-state', payload);
   return response.data;
+};
+
+export const fetchWorkflowAvailableRequests = async (): Promise<WorkflowAvailableRequest[]> => {
+  const response = await api.get('/workflow-requests');
+  const data = response.data || {};
+  return Array.isArray(data.requests) ? data.requests : [];
 };
 
 export const fetchAdminStats = async (): Promise<AdminStatsPayload> => {

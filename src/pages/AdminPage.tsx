@@ -1,7 +1,6 @@
 import React from 'react';
 import { Alert, Button, Card, Layout, Spin, Table, Typography } from 'antd';
 import { useNavigate } from 'react-router-dom';
-import { RouteSidebar } from '../components/RouteSidebar';
 import { fetchAdminStats } from '../api/http';
 
 const { Content } = Layout;
@@ -57,8 +56,6 @@ export const AdminPage: React.FC = () => {
   ];
 
   return (
-    <Layout className="h-screen bg-white overflow-hidden">
-      <RouteSidebar />
       <Content className="flex-1 min-h-0 overflow-auto bg-[#f5f5f5] p-6">
         <Card>
           <Title level={3} className="!mb-2">管理后台</Title>
@@ -118,6 +115,5 @@ export const AdminPage: React.FC = () => {
           )}
         </Card>
       </Content>
-    </Layout>
   );
 };
