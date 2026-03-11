@@ -1659,9 +1659,18 @@ const handleRunWorkflow = async () => {
           <>
             <div className="h-12 flex items-center justify-between px-4 border-b border-gray-200">
               <h2 className="text-lg font-semibold text-gray-800 margin-0">工作流</h2>
-              <Tag color={statusColor} className="m-0">
-                {statusText}
-              </Tag>
+              <div className="flex items-center gap-2">
+                <Tag color={statusColor} className="m-0">
+                  {statusText}
+                </Tag>
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<MenuFoldOutlined />}
+                  onClick={() => setWorkflowSiderCollapsed(true)}
+                  className="text-gray-400 hover:text-gray-600"
+                />
+              </div>
             </div>
           <div className="flex-1 flex flex-col overflow-hidden">
             <div className="border-t border-gray-200">
@@ -1737,14 +1746,6 @@ const handleRunWorkflow = async () => {
               ))}
             </div>
           </div>
-          <Button
-            type="primary"
-            shape="circle"
-            size="middle"
-            icon={<MenuFoldOutlined />}
-            onClick={() => setWorkflowSiderCollapsed(true)}
-            className="!absolute !right-2 !top-1/2 !-translate-y-1/2 shadow-md border-2 border-white"
-          />
           </>
         )}
       </Sider>

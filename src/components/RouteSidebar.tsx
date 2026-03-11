@@ -188,9 +188,9 @@ export const RouteSidebar: React.FC = () => {
 
   return (
     <Sider
-      width={expanded ? 208 : 64}
+      width={expanded ? 220 : 64}
       className="bg-white border-r border-gray-200 transition-all duration-200 relative"
-      style={{ flex: `0 0 ${expanded ? 208 : 64}px`, maxWidth: expanded ? 208 : 64, minWidth: expanded ? 208 : 64, width: expanded ? 208 : 64 }}
+      style={{ flex: `0 0 ${expanded ? 220 : 64}px`, maxWidth: expanded ? 220 : 64, minWidth: expanded ? 220 : 64, width: expanded ? 220 : 64 }}
     >
       <div className={`h-full flex flex-col py-4 gap-3 ${expanded ? 'px-3' : 'items-center'}`}>
         {sidebarItems.map((item) => {
@@ -224,7 +224,7 @@ export const RouteSidebar: React.FC = () => {
             type="button"
             className={`mb-1 rounded-full border border-gray-200 bg-white hover:border-blue-400 transition-colors ${
               expanded
-                ? 'w-full rounded-2xl px-3 py-2 flex items-center gap-3 justify-start'
+                ? 'w-full rounded-2xl px-3 py-2.5 flex items-center gap-3 justify-start'
                 : 'w-10 h-10 flex items-center justify-center'
             }`}
           >
@@ -243,10 +243,12 @@ export const RouteSidebar: React.FC = () => {
       <button
         type="button"
         onClick={() => setExpanded((prev) => !prev)}
-        className="absolute top-1/2 -right-4 -translate-y-1/2 w-8 h-8 rounded-full border border-gray-300 bg-white text-gray-600 shadow-sm hover:border-blue-400 hover:text-blue-600 transition-colors flex items-center justify-center z-20"
+        className={`absolute -right-3 w-6 h-6 rounded-full border border-gray-300 bg-white text-gray-600 shadow-sm hover:border-blue-400 hover:text-blue-600 transition-colors flex items-center justify-center z-20 ${
+          expanded ? 'bottom-[34px]' : 'bottom-[28px]'
+        }`}
         aria-label={expanded ? '收起侧边栏' : '展开侧边栏'}
       >
-        {expanded ? <LeftOutlined /> : <RightOutlined />}
+        {expanded ? <LeftOutlined style={{ fontSize: 10 }} /> : <RightOutlined style={{ fontSize: 10 }} />}
       </button>
       <Modal
         title="编辑个人信息"
