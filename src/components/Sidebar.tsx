@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Layout, Popconfirm, message, Input, Tag, Select, Button, Dropdown, Tooltip } from 'antd';
+import { Layout, Popconfirm, message, Input, Tag, Dropdown, Tooltip, Button } from 'antd';
 import type { MenuProps } from 'antd';
 import {
   PlusOutlined,
@@ -8,7 +8,6 @@ import {
   FolderAddOutlined,
   FolderOpenOutlined,
   FolderOutlined,
-  HolderOutlined,
   MoreOutlined,
   RightOutlined,
   DownOutlined,
@@ -24,6 +23,7 @@ import {
   PointerSensor,
   useSensor,
   useSensors,
+  useDroppable,
 } from '@dnd-kit/core';
 import type { DragEndEvent } from '@dnd-kit/core';
 import {
@@ -36,7 +36,6 @@ import { CSS } from '@dnd-kit/utilities';
 import { healthCheck } from '../api/http';
 
 const { Sider } = Layout;
-const { Option } = Select;
 
 interface SidebarProps {
   isLoading: boolean;
@@ -54,6 +53,116 @@ const methodColors: Record<string, string> = {
   PATCH: 'purple',
 };
 
+interface SortableFolderProps {
+  folder: { id: string; name: string; expanded: boolean };
+  requestCount: number;
+  editingFolderId: string | null;
+  editingFolderName: string;
+  onToggleExpand: () => void;
+  onRename: (id: string, name: string) => void;
+  onStartEdit: (e: React.MouseEvent, id: string, name: string) => void;
+  onDelete: (id: string) => void;
+  setEditingFolderName: (name: string) => void;
+  children?: React.ReactNode;
+}
+
+function SortableFolder({
+  folder,
+  requestCount,
+  editingFolderId,
+  editingFolderName,
+  onToggleExpand,
+  onRename,
+  onStartEdit,
+  onDelete,
+  setEditingFolderName,
+  children,
+}: SortableFolderProps) {
+  const { setNodeRef: setDropRef, isOver } = useDroppable({
+    id: folder.id,
+    data: { type: 'folder', folderId: folder.id },
+  });
+
+  const {
+    attributes,
+    listeners,
+    setNodeRef: setSortRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: folder.id, data: { type: 'folder', folderId: folder.id } });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  };
+
+  const setNodeRef = (node: HTMLDivElement | null) => {
+    setDropRef(node);
+    setSortRef(node);
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={isOver ? 'bg-blue-100 ring-2 ring-blue-400 ring-inset' : ''}
+      {...attributes}
+      {...listeners}
+    >
+      <div
+        className="px-4 h-12 flex items-center justify-between cursor-pointer hover:bg-gray-50 border-t border-gray-100"
+        onClick={onToggleExpand}
+      >
+        <div className="flex items-center gap-2 min-w-0">
+          {folder.expanded ? (
+            <DownOutlined className="text-xs text-gray-500" />
+          ) : (
+            <RightOutlined className="text-xs text-gray-500" />
+          )}
+          {folder.expanded ? (
+            <FolderOpenOutlined className="text-amber-500" />
+          ) : (
+            <FolderOutlined className="text-amber-500" />
+          )}
+          {editingFolderId === folder.id ? (
+            <Input
+              size="small"
+              value={editingFolderName}
+              onChange={(e) => setEditingFolderName(e.target.value)}
+              onPressEnter={() => onRename(folder.id, editingFolderName)}
+              onBlur={() => onRename(folder.id, editingFolderName)}
+              autoFocus
+              className="w-[120px]"
+              onClick={(e) => e.stopPropagation()}
+            />
+          ) : (
+            <span className="truncate text-sm font-medium text-gray-700">{folder.name}</span>
+          )}
+          <span className="text-xs text-gray-400">{requestCount}</span>
+        </div>
+        <div className="flex items-center gap-2 text-gray-400" onClick={(e) => e.stopPropagation()}>
+          <EditOutlined
+            className="hover:text-blue-500"
+            onClick={(e) => onStartEdit(e, folder.id, folder.name)}
+          />
+          <Popconfirm
+            title="删除文件夹"
+            description="删除后，文件夹内请求将移到未分组。"
+            onConfirm={() => onDelete(folder.id)}
+            okText="确定"
+            cancelText="取消"
+          >
+            <DeleteOutlined className="hover:text-red-500" />
+          </Popconfirm>
+        </div>
+      </div>
+      {children}
+    </div>
+  );
+}
+
 interface SortableItemProps {
   id: string;
   req: HttpRequest;
@@ -62,13 +171,13 @@ interface SortableItemProps {
   editingId: string | null;
   editingName: string;
   onRename: (id: string, newName: string) => void;
-  onEdit: (e: React.MouseEvent, req: any) => void;
   onDelete: (id: string) => void;
   onSelect: (id: string) => void;
   onMoveToFolder: (requestId: string, folderId: string | null) => void;
   onTogglePublic: (requestId: string, nextIsPublic: boolean) => void;
   setEditingId: (id: string | null) => void;
   setEditingName: (name: string) => void;
+  inFolder?: boolean;
 }
 
 function SortableItem({
@@ -79,13 +188,13 @@ function SortableItem({
   editingId,
   editingName,
   onRename,
-  onEdit,
   onDelete,
   onSelect,
   onMoveToFolder,
   onTogglePublic,
   setEditingId,
   setEditingName,
+  inFolder = false,
 }: SortableItemProps) {
   const {
     attributes,
@@ -94,7 +203,7 @@ function SortableItem({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id });
+  } = useSortable({ id, data: { type: 'request' } });
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -133,67 +242,74 @@ function SortableItem({
     <div
       ref={setNodeRef}
       style={style}
-      className={`px-4 h-14 flex items-center cursor-pointer hover:bg-blue-50 ${selectedRequestId === req.id ? 'bg-blue-100 border-l-4 border-blue-500' : ''}`}
+      className={`h-14 flex items-center cursor-pointer hover:bg-blue-50 ${inFolder ? 'bg-amber-50/50' : ''} ${selectedRequestId === req.id ? 'bg-blue-100' : ''}`}
       onClick={() => onSelect(req.id)}
+      {...attributes}
+      {...listeners}
     >
-      <div className="flex items-center justify-between w-full">
-        <div className="flex items-center gap-2 min-w-0 flex-1">
-          <div {...attributes} {...listeners} className="cursor-grab flex-shrink-0">
-            <HolderOutlined className="text-gray-400 hover:text-gray-600" />
-          </div>
-          <Tag color={methodColors[req.method] || 'default'} className="m-0 flex-shrink-0">
-            {req.method}
-          </Tag>
-          {editingId === req.id ? (
-            <Input
-              size="small"
-              value={editingName}
-              onChange={(e) => setEditingName(e.target.value)}
-              onPressEnter={() => onRename(req.id, editingName)}
-              onBlur={() => onRename(req.id, editingName)}
-              autoFocus
-              className="flex-1"
-              onClick={(e) => e.stopPropagation()}
-            />
-          ) : (
-            <span className="truncate flex-1">{req.name}</span>
-          )}
-        </div>
-        <div className="flex items-center flex-shrink-0" onClick={(e) => e.stopPropagation()}>
-          <Dropdown
-            trigger={['click']}
-            menu={{
-              items: actionMenuItems,
-              onClick: ({ key }) => {
-                if (key === 'toggle-public') {
-                  if (isDefaultRequest) {
-                    return;
-                  }
-                  onTogglePublic(req.id, !req.isPublic);
-                  return;
-                }
-                if (key === 'edit') {
-                  setEditingId(req.id);
-                  setEditingName(req.name);
-                  return;
-                }
-                if (key === 'delete') {
-                  onDelete(req.id);
-                  return;
-                }
-                if (key === '__ungrouped' || folderMenuItems?.some((item) => item?.key === key)) {
-                  onMoveToFolder(req.id, key === '__ungrouped' ? null : String(key));
-                }
-              },
-            }}
-          >
-            <Tooltip title="更多操作">
-              <MoreOutlined
-                className="ml-2 text-gray-400 hover:text-blue-500"
+      {inFolder && (
+        <div className="w-1 h-full bg-amber-300 flex-shrink-0" />
+      )}
+      {selectedRequestId === req.id && (
+        <div className="w-1 h-full bg-blue-500 flex-shrink-0" />
+      )}
+      <div className={`flex-1 ${inFolder ? 'px-3' : 'px-4'}`}>
+        <div className="flex items-center justify-between w-full">
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            <Tag color={methodColors[req.method] || 'default'} className="m-0 flex-shrink-0">
+              {req.method}
+            </Tag>
+            {editingId === req.id ? (
+              <Input
+                size="small"
+                value={editingName}
+                onChange={(e) => setEditingName(e.target.value)}
+                onPressEnter={() => onRename(req.id, editingName)}
+                onBlur={() => onRename(req.id, editingName)}
+                autoFocus
+                className="flex-1"
                 onClick={(e) => e.stopPropagation()}
               />
-            </Tooltip>
-          </Dropdown>
+            ) : (
+              <span className="truncate flex-1">{req.name}</span>
+            )}
+          </div>
+          <div className="flex items-center flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+            <Dropdown
+              trigger={['click']}
+              menu={{
+                items: actionMenuItems,
+                onClick: ({ key }) => {
+                  if (key === 'toggle-public') {
+                    if (isDefaultRequest) {
+                      return;
+                    }
+                    onTogglePublic(req.id, !req.isPublic);
+                    return;
+                  }
+                  if (key === 'edit') {
+                    setEditingId(req.id);
+                    setEditingName(req.name);
+                    return;
+                  }
+                  if (key === 'delete') {
+                    onDelete(req.id);
+                    return;
+                  }
+                  if (key === '__ungrouped' || folderMenuItems?.some((item) => item?.key === key)) {
+                    onMoveToFolder(req.id, key === '__ungrouped' ? null : String(key));
+                  }
+                },
+              }}
+            >
+              <Tooltip title="更多操作">
+                <MoreOutlined
+                  className="ml-2 text-gray-400 hover:text-blue-500"
+                  onClick={(e) => e.stopPropagation()}
+                />
+              </Tooltip>
+            </Dropdown>
+          </div>
         </div>
       </div>
     </div>
@@ -231,6 +347,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     addFolder,
     updateFolder,
     deleteFolder,
+    reorderFolders,
     toggleFolderExpanded,
     moveRequestToFolder,
     setSelectedRequest,
@@ -239,7 +356,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [editingName, setEditingName] = useState('');
   const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
   const [editingFolderName, setEditingFolderName] = useState('');
-  const [filterMethod, setFilterMethod] = useState<string>('all');
+  const [searchKeyword, setSearchKeyword] = useState('');
   const listRef = useRef<HTMLDivElement | null>(null);
   const [showTopHint, setShowTopHint] = useState(false);
   const [showBottomHint, setShowBottomHint] = useState(false);
@@ -247,15 +364,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [showSavedStatus, setShowSavedStatus] = useState(false);
 
   const sensors = useSensors(
-    useSensor(PointerSensor),
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 8,
+      },
+    }),
     useSensor(KeyboardSensor, {
       coordinateGetter: sortableKeyboardCoordinates,
     })
   );
 
   const filteredRequests = useMemo(
-    () => (filterMethod === 'all' ? requests : requests.filter((req) => req.method === filterMethod)),
-    [filterMethod, requests]
+    () => (searchKeyword.trim() === '' ? requests : requests.filter((req) => req.name.toLowerCase().includes(searchKeyword.toLowerCase()))),
+    [searchKeyword, requests]
   );
 
   const folderMenuItems = useMemo<MenuProps['items']>(() => ([
@@ -272,12 +393,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
       message.success('请求已重命名');
     }
     setEditingId(null);
-  };
-
-  const startEditing = (e: React.MouseEvent, req: HttpRequest) => {
-    e.stopPropagation();
-    setEditingId(req.id);
-    setEditingName(req.name);
   };
 
   const startFolderEditing = (e: React.MouseEvent, folderId: string, folderName: string) => {
@@ -300,19 +415,41 @@ export const Sidebar: React.FC<SidebarProps> = ({
       return;
     }
 
-    const activeReq = requests.find((req) => req.id === active.id);
-    const overReq = requests.find((req) => req.id === over.id);
-    if (!activeReq || !overReq) {
-      return;
-    }
-    if ((activeReq.folderId || null) !== (overReq.folderId || null)) {
+    const activeData = active.data.current;
+    const overData = over.data.current;
+
+    if (activeData?.type === 'folder') {
+      if (overData?.type !== 'folder') {
+        return;
+      }
+      const oldIndex = folders.findIndex((folder) => folder.id === active.id);
+      const newIndex = folders.findIndex((folder) => folder.id === over.id);
+      if (oldIndex !== -1 && newIndex !== -1) {
+        reorderFolders(oldIndex, newIndex);
+      }
       return;
     }
 
-    const oldIndex = requests.findIndex((req) => req.id === activeReq.id);
-    const newIndex = requests.findIndex((req) => req.id === overReq.id);
-    if (oldIndex !== -1 && newIndex !== -1) {
-      reorderRequests(oldIndex, newIndex);
+    if (activeData?.type === 'request') {
+      if (overData?.type === 'folder') {
+        const targetFolderId = overData.folderId as string;
+        const activeReq = requests.find((req) => req.id === active.id);
+        if (activeReq && activeReq.folderId !== targetFolderId) {
+          moveRequestToFolder(activeReq.id, targetFolderId);
+          message.success('请求已移动到文件夹');
+        }
+        return;
+      }
+
+      const oldIndex = requests.findIndex((req) => req.id === active.id);
+      const newIndex = requests.findIndex((req) => req.id === over.id);
+      if (oldIndex !== -1 && newIndex !== -1) {
+        const activeReq = requests[oldIndex];
+        const overReq = requests[newIndex];
+        if ((activeReq.folderId || null) === (overReq.folderId || null)) {
+          reorderRequests(oldIndex, newIndex);
+        }
+      }
     }
   };
 
@@ -437,46 +574,35 @@ export const Sidebar: React.FC<SidebarProps> = ({
           {statusText}
         </Tag>
       </div>
-      <div className="px-3 py-2 border-b border-gray-200 flex-shrink-0">
-        <Select
-          value={filterMethod}
-          onChange={setFilterMethod}
-          className="w-full"
+      <div className="px-3 py-2 border-b border-gray-200 flex-shrink-0 flex items-center gap-2">
+        <Input
+          placeholder="搜索请求"
+          value={searchKeyword}
+          onChange={(e) => setSearchKeyword(e.target.value)}
           size="small"
-        >
-          <Option value="all">全部</Option>
-          <Option value="GET">GET</Option>
-          <Option value="POST">POST</Option>
-          <Option value="PUT">PUT</Option>
-          <Option value="DELETE">DELETE</Option>
-          <Option value="PATCH">PATCH</Option>
-        </Select>
+          allowClear
+          className="flex-1"
+        />
+        <Tooltip title="添加请求">
+          <Button
+            type="text"
+            size="small"
+            icon={<PlusOutlined />}
+            onClick={addRequestAndPersist}
+            disabled={isLoading}
+          />
+        </Tooltip>
+        <Tooltip title="添加文件夹">
+          <Button
+            type="text"
+            size="small"
+            icon={<FolderAddOutlined />}
+            onClick={addFolderAndPersist}
+            disabled={isLoading}
+          />
+        </Tooltip>
       </div>
       <div className="flex-1 flex flex-col min-h-0">
-        <div className="border-t border-gray-200 flex-shrink-0">
-          <div
-            onClick={addRequestAndPersist}
-            className={`flex items-center gap-2 px-4 py-3 transition-colors h-12 ${
-              isLoading
-                ? 'cursor-not-allowed text-gray-400 bg-gray-50'
-                : 'cursor-pointer hover:bg-gray-50 text-gray-600 hover:text-gray-800'
-            }`}
-          >
-            <PlusOutlined />
-            <span>添加请求</span>
-          </div>
-          <div
-            onClick={addFolderAndPersist}
-            className={`flex items-center gap-2 px-4 py-3 transition-colors h-12 border-t border-gray-100 ${
-              isLoading
-                ? 'cursor-not-allowed text-gray-400 bg-gray-50'
-                : 'cursor-pointer hover:bg-gray-50 text-gray-600 hover:text-gray-800'
-            }`}
-          >
-            <FolderAddOutlined />
-            <span>添加文件夹</span>
-          </div>
-        </div>
         <div className="relative flex flex-col flex-1 min-h-0">
           {showTopHint && !isLoading && (
             <div className="absolute top-0 left-0 right-0 z-10 flex justify-center">
@@ -532,7 +658,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         editingId={editingId}
                         editingName={editingName}
                         onRename={handleRename}
-                        onEdit={startEditing}
                         onDelete={(id) => {
                           deleteRequest(id);
                           message.success('请求已删除');
@@ -547,65 +672,32 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   </SortableContext>
                 )}
 
-                {folders.map((folder) => {
-                  const folderRequests = getFolderRequests(folder.id);
-                  const requestCount = folderRequests.length;
-                  return (
-                    <div key={folder.id}>
-                      <div
-                        className="px-4 h-12 flex items-center justify-between cursor-pointer hover:bg-gray-50 border-t border-gray-100"
-                        onClick={() => toggleFolderExpanded(folder.id)}
+                <SortableContext
+                  items={folders.map((folder) => folder.id)}
+                  strategy={verticalListSortingStrategy}
+                >
+                  {folders.map((folder) => {
+                    const folderRequests = getFolderRequests(folder.id);
+                    const requestCount = folderRequests.length;
+                    return (
+                      <SortableFolder
+                        key={folder.id}
+                        folder={folder}
+                        requestCount={requestCount}
+                        editingFolderId={editingFolderId}
+                        editingFolderName={editingFolderName}
+                        onToggleExpand={() => toggleFolderExpanded(folder.id)}
+                        onRename={handleFolderRename}
+                        onStartEdit={startFolderEditing}
+                        onDelete={(id: string) => {
+                          deleteFolder(id);
+                          message.success('文件夹已删除');
+                        }}
+                        setEditingFolderName={setEditingFolderName}
                       >
-                        <div className="flex items-center gap-2 min-w-0">
-                          {folder.expanded ? (
-                            <DownOutlined className="text-xs text-gray-500" />
-                          ) : (
-                            <RightOutlined className="text-xs text-gray-500" />
-                          )}
-                          {folder.expanded ? (
-                            <FolderOpenOutlined className="text-amber-500" />
-                          ) : (
-                            <FolderOutlined className="text-amber-500" />
-                          )}
-                          {editingFolderId === folder.id ? (
-                            <Input
-                              size="small"
-                              value={editingFolderName}
-                              onChange={(e) => setEditingFolderName(e.target.value)}
-                              onPressEnter={() => handleFolderRename(folder.id, editingFolderName)}
-                              onBlur={() => handleFolderRename(folder.id, editingFolderName)}
-                              autoFocus
-                              className="w-[120px]"
-                              onClick={(e) => e.stopPropagation()}
-                            />
-                          ) : (
-                            <span className="truncate text-sm font-medium text-gray-700">{folder.name}</span>
-                          )}
-                          <span className="text-xs text-gray-400">{requestCount}</span>
-                        </div>
-                        <div className="flex items-center gap-2 text-gray-400" onClick={(e) => e.stopPropagation()}>
-                          <EditOutlined
-                            className="hover:text-blue-500"
-                            onClick={(e) => startFolderEditing(e, folder.id, folder.name)}
-                          />
-                          <Popconfirm
-                            title="删除文件夹"
-                            description="删除后，文件夹内请求将移到未分组。"
-                            onConfirm={() => {
-                              deleteFolder(folder.id);
-                              message.success('文件夹已删除');
-                            }}
-                            okText="确定"
-                            cancelText="取消"
-                          >
-                            <DeleteOutlined className="hover:text-red-500" />
-                          </Popconfirm>
-                        </div>
-                      </div>
-                      {folder.expanded && (
-                        <>
-                          {requestCount > 0 ? (
-                            <div className="ml-4 border-l border-gray-200">
+                        {folder.expanded && (
+                          <>
+                            {requestCount > 0 ? (
                               <SortableContext
                                 items={folderRequests.map((req) => req.id)}
                                 strategy={verticalListSortingStrategy}
@@ -620,7 +712,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                     editingId={editingId}
                                     editingName={editingName}
                                     onRename={handleRename}
-                                    onEdit={startEditing}
                                     onDelete={(id) => {
                                       deleteRequest(id);
                                       message.success('请求已删除');
@@ -630,18 +721,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                     onTogglePublic={handleToggleRequestPublic}
                                     setEditingId={setEditingId}
                                     setEditingName={setEditingName}
+                                    inFolder
                                   />
                                 ))}
                               </SortableContext>
-                            </div>
-                          ) : (
-                            <div className="px-4 py-2 text-xs text-gray-400">文件夹为空</div>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  );
-                })}
+                            ) : (
+                              <div className="px-4 py-2 text-xs text-gray-400">文件夹为空</div>
+                            )}
+                          </>
+                        )}
+                      </SortableFolder>
+                    );
+                  })}
+                </SortableContext>
 
                 {!hasAnyVisibleRequest && folders.length === 0 && (
                   <div className="px-4 py-6 text-sm text-gray-500">暂无请求，点击“添加请求”开始。</div>

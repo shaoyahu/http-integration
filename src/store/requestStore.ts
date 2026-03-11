@@ -59,6 +59,7 @@ interface RequestStore {
   addFolder: () => void
   updateFolder: (id: string, updates: Partial<RequestFolder>) => void
   deleteFolder: (id: string) => void
+  reorderFolders: (oldIndex: number, newIndex: number) => void
   toggleFolderExpanded: (id: string) => void
   moveRequestToFolder: (requestId: string, folderId: string | null) => void
   setRequestsState: (requests: HttpRequest[], selectedRequestId: string | null, folders?: RequestFolder[]) => void
@@ -178,6 +179,13 @@ export const useRequestStore = create<RequestStore>((set) => ({
         req.folderId === id ? { ...req, folderId: null } : req
       )),
     })),
+  reorderFolders: (oldIndex, newIndex) =>
+    set((state) => {
+      const newFolders = [...state.folders];
+      const [movedItem] = newFolders.splice(oldIndex, 1);
+      newFolders.splice(newIndex, 0, movedItem);
+      return { folders: newFolders };
+    }),
   toggleFolderExpanded: (id) =>
     set((state) => ({
       folders: state.folders.map((folder) => (
