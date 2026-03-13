@@ -243,9 +243,7 @@ export const RouteSidebar: React.FC = () => {
       <button
         type="button"
         onClick={() => setExpanded((prev) => !prev)}
-        className={`absolute -right-3 w-6 h-6 rounded-full border border-gray-300 bg-white text-gray-600 shadow-sm hover:border-blue-400 hover:text-blue-600 transition-colors flex items-center justify-center z-20 ${
-          expanded ? 'bottom-[34px]' : 'bottom-[28px]'
-        }`}
+        className="absolute -right-3 top-12 w-6 h-6 rounded-full border border-gray-300 bg-white text-gray-600 shadow-sm hover:border-blue-400 hover:text-blue-600 transition-colors flex items-center justify-center z-20"
         aria-label={expanded ? '收起侧边栏' : '展开侧边栏'}
       >
         {expanded ? <LeftOutlined style={{ fontSize: 10 }} /> : <RightOutlined style={{ fontSize: 10 }} />}

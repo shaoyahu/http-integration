@@ -47,6 +47,7 @@ export interface HttpRequest {
   isPublic?: boolean
   ownerUserId?: string
   ownerUsername?: string
+  iconUrl?: string
 }
 
 interface RequestStore {
@@ -82,6 +83,7 @@ const DEFAULT_REQUEST: HttpRequest = {
   apiMappings: [],
   folderId: null,
   isPublic: false,
+  iconUrl: '',
 }
 
 const createRequestTemplate = (index: number, folderId: string | null = null): HttpRequest => ({
@@ -98,6 +100,7 @@ const createRequestTemplate = (index: number, folderId: string | null = null): H
   apiMappings: [],
   folderId,
   isPublic: false,
+  iconUrl: '',
 })
 
 const createFolderTemplate = (index: number): RequestFolder => ({
@@ -122,6 +125,7 @@ const normalizeRequest = (req: Partial<HttpRequest>, fallbackIndex: number): Htt
   isPublic: Boolean(req.isPublic),
   ownerUserId: typeof req.ownerUserId === 'string' ? req.ownerUserId : undefined,
   ownerUsername: typeof req.ownerUsername === 'string' ? req.ownerUsername : undefined,
+  iconUrl: typeof req.iconUrl === 'string' ? req.iconUrl : '',
 })
 
 const normalizeFolder = (folder: Partial<RequestFolder>, fallbackIndex: number): RequestFolder => ({

@@ -60,6 +60,7 @@ export const RequestEditor: React.FC = () => {
   const [testLoading, setTestLoading] = React.useState(false);
   const [requestName, setRequestName] = React.useState('');
   const [requestDescription, setRequestDescription] = React.useState('');
+  const [requestIconUrl, setRequestIconUrl] = React.useState('');
   const [draftMethod, setDraftMethod] = React.useState('GET');
   const [draftUrl, setDraftUrl] = React.useState('');
   const [isEditingBasicInfo, setIsEditingBasicInfo] = React.useState(false);
@@ -86,6 +87,7 @@ export const RequestEditor: React.FC = () => {
       if (selectedRequest) {
         setRequestName(selectedRequest.name);
         setRequestDescription(selectedRequest.description || '');
+        setRequestIconUrl(selectedRequest.iconUrl || '');
         setDraftMethod(selectedRequest.method);
         setDraftUrl(selectedRequest.url);
         setIsEditingBasicInfo(false);
@@ -135,13 +137,15 @@ export const RequestEditor: React.FC = () => {
     }
     const nextName = requestName.trim();
     const nextDescription = requestDescription.trim();
-    const nextMethod = draftMethod;
+    const nextMethod = draftMethod as 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
     const nextUrl = draftUrl.trim();
+    const nextIconUrl = requestIconUrl.trim();
     if (
       selectedRequest.name === nextName &&
       (selectedRequest.description || '') === nextDescription &&
       selectedRequest.method === nextMethod &&
-      selectedRequest.url === nextUrl
+      selectedRequest.url === nextUrl &&
+      (selectedRequest.iconUrl || '') === nextIconUrl
     ) {
       setIsEditingBasicInfo(false);
       setEditSnapshot(null);
@@ -152,6 +156,7 @@ export const RequestEditor: React.FC = () => {
       description: nextDescription,
       method: nextMethod,
       url: nextUrl,
+      iconUrl: nextIconUrl,
     });
     setIsEditingBasicInfo(false);
     setEditSnapshot(null);
@@ -530,6 +535,21 @@ export const RequestEditor: React.FC = () => {
           ) : (
             <div className="min-h-8 px-2 py-1 text-sm text-gray-700 whitespace-pre-wrap">
               {selectedRequest.description || '-'}
+            </div>
+          )}
+        </div>
+        <div>
+          <div className="mb-1 text-sm font-medium text-gray-700">节点图标</div>
+          {isEditingBasicInfo ? (
+            <Input
+              value={requestIconUrl}
+              onChange={(e) => setRequestIconUrl(e.target.value)}
+              placeholder="可选：输入图标图片 URL，用于工作流节点显示"
+              className="max-w-xl"
+            />
+          ) : (
+            <div className="min-h-8 px-2 py-1 text-sm text-gray-700">
+              {selectedRequest.iconUrl || '-'}
             </div>
           )}
         </div>

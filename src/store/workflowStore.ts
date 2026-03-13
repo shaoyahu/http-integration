@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 
+const NODE_WIDTH = 80
+
 export interface HttpParam {
   key: string
   value: string
@@ -18,10 +20,17 @@ export interface OutputField {
   description?: string
 }
 
+export interface WorkflowEdge {
+  id: string
+  sourceId: string
+  targetId: string
+}
+
 export interface Workflow {
   id: string
   name: string
   requests: WorkflowRequest[]
+  edges: WorkflowEdge[]
   createdAt: number
   updatedAt: number
   nodePositions?: Record<string, { x: number; y: number }>
@@ -39,6 +48,7 @@ export interface WorkflowRequest {
   outputFields: OutputField[]
   inputValues: Record<string, string>
   apiMappings?: Array<{ inputName: string; target: 'path' | 'params' | 'body'; key: string }>
+  iconUrl?: string
 }
 
 interface WorkflowStore {
@@ -53,6 +63,11 @@ interface WorkflowStore {
   updateWorkflowRequestInputValue: (workflowId: string, requestId: string, fieldName: string, value: string) => void
   reorderWorkflowRequests: (workflowId: string, oldIndex: number, newIndex: number) => void
   setSelectedWorkflow: (id: string | null) => void
+  duplicateWorkflowRequest: (workflowId: string, requestId: string) => string | null
+  addOutputFieldsFromResponse: (workflowId: string, requestId: string, response: any) => void
+  addEdge: (workflowId: string, sourceId: string, targetId: string) => void
+  removeEdge: (workflowId: string, edgeId: string) => void
+  updateEdge: (workflowId: string, edgeId: string, sourceId: string, targetId: string) => void
 }
 
 export const useWorkflowStore = create<WorkflowStore>((set) => ({
@@ -68,7 +83,7 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
   addWorkflow: () =>
     set((state) => {
       const now = Date.now()
-      const workflowId = now.toString()
+      const workflowId = `${now}-${Math.random().toString(36).slice(2, 8)}`
       return {
         workflows: [
           ...state.workflows,
@@ -76,6 +91,7 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
             id: workflowId,
             name: `工作流 ${state.workflows.length + 1}`,
             requests: [],
+            edges: [],
             createdAt: now,
             updatedAt: now,
             nodePositions: {},
@@ -91,10 +107,17 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
       ),
     })),
   deleteWorkflow: (id) =>
-    set((state) => ({
-      workflows: state.workflows.filter((wf) => wf.id !== id),
-      selectedWorkflowId: state.selectedWorkflowId === id ? null : state.selectedWorkflowId,
-    })),
+    set((state) => {
+      const remainingWorkflows = state.workflows.filter((wf) => wf.id !== id);
+      let nextSelectedId = state.selectedWorkflowId;
+      if (state.selectedWorkflowId === id) {
+        nextSelectedId = remainingWorkflows[0]?.id || null;
+      }
+      return {
+        workflows: remainingWorkflows,
+        selectedWorkflowId: nextSelectedId,
+      };
+    }),
   addRequestToWorkflow: (workflowId, request) =>
     set((state) => ({
       workflows: state.workflows.map((wf) =>
@@ -126,20 +149,6 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
               updatedAt: Date.now(),
               requests: wf.requests.filter((req) => req.id !== requestId),
               nodePositions: Object.fromEntries(Object.entries(wf.nodePositions || {}).filter(([key]) => key !== requestId)),
-            }
-          : wf
-      ),
-    })),
-  updateWorkflowRequest: (workflowId, requestId, updates) =>
-    set((state) => ({
-      workflows: state.workflows.map((wf) =>
-        wf.id === workflowId
-          ? {
-              ...wf,
-              updatedAt: Date.now(),
-              requests: wf.requests.map((req) =>
-                req.id === requestId ? { ...req, ...updates } : req
-              ),
             }
           : wf
       ),
@@ -214,4 +223,95 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
       };
     }),
   setSelectedWorkflow: (id) => set({ selectedWorkflowId: id }),
+  duplicateWorkflowRequest: (workflowId, requestId) => {
+    const state = useWorkflowStore.getState();
+    const workflow = state.workflows.find((wf) => wf.id === workflowId);
+    if (!workflow) return null;
+    
+    const requestIndex = workflow.requests.findIndex((req) => req.id === requestId);
+    if (requestIndex === -1) return null;
+    
+    const originalRequest = workflow.requests[requestIndex];
+    const newId = Date.now().toString();
+    const duplicatedRequest: WorkflowRequest = {
+      ...originalRequest,
+      id: newId,
+      name: `${originalRequest.name} (副本)`,
+      inputValues: { ...originalRequest.inputValues },
+    };
+    
+    const newRequests = [...workflow.requests];
+    newRequests.splice(requestIndex + 1, 0, duplicatedRequest);
+    
+    const newNodePositions = {
+      ...workflow.nodePositions,
+      [newId]: workflow.nodePositions?.[requestId] 
+        ? { 
+            x: (workflow.nodePositions[requestId]?.x || 0) + NODE_WIDTH + 40, 
+            y: workflow.nodePositions[requestId]?.y || 0 
+          }
+        : { x: 0, y: 0 },
+    };
+    
+    useWorkflowStore.setState({
+      workflows: state.workflows.map((wf) =>
+        wf.id === workflowId 
+          ? { ...wf, updatedAt: Date.now(), requests: newRequests, nodePositions: newNodePositions }
+          : wf
+      ),
+    });
+    
+    return newId;
+  },
+  addEdge: (workflowId, sourceId, targetId) =>
+    set((state) => {
+      const workflow = state.workflows.find((wf) => wf.id === workflowId);
+      if (!workflow) return state;
+      
+      const edges = workflow.edges || [];
+      const existingEdge = edges.find(
+        (e) => e.sourceId === sourceId && e.targetId === targetId
+      );
+      if (existingEdge) return state;
+      
+      const newEdge: WorkflowEdge = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        sourceId,
+        targetId,
+      };
+      
+      return {
+        workflows: state.workflows.map((wf) =>
+          wf.id === workflowId
+            ? { ...wf, updatedAt: Date.now(), edges: [...edges, newEdge] }
+            : wf
+        ),
+      };
+    }),
+  removeEdge: (workflowId, edgeId) =>
+    set((state) => ({
+      workflows: state.workflows.map((wf) =>
+        wf.id === workflowId
+          ? {
+              ...wf,
+              updatedAt: Date.now(),
+              edges: (wf.edges || []).filter((e) => e.id !== edgeId),
+            }
+          : wf
+      ),
+    })),
+  updateEdge: (workflowId, edgeId, sourceId, targetId) =>
+    set((state) => ({
+      workflows: state.workflows.map((wf) =>
+        wf.id === workflowId
+          ? {
+              ...wf,
+              updatedAt: Date.now(),
+              edges: (wf.edges || []).map((e) =>
+                e.id === edgeId ? { ...e, sourceId, targetId } : e
+              ),
+            }
+          : wf
+      ),
+    })),
 }))

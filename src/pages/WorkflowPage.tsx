@@ -85,39 +85,20 @@ const buildCurl = (url: string, method: string, params: Record<string, string>, 
   return parts.join(' ');
 };
 
-const NODE_WIDTH = 240;
-const NODE_HEIGHT = 120;
+const NODE_SIZE = 80;
+const NODE_WIDTH = NODE_SIZE;
+const NODE_HEIGHT = NODE_SIZE;
 const TRIGGER_WIDTH = 220;
 const TRIGGER_HEIGHT = 80;
-const CONNECTOR_LENGTH = 56;
 const MIN_CANVAS_WIDTH = 0;
 const MIN_CANVAS_HEIGHT = 0;
 const COMPACT_NODE_SCALE = 0.85;
 const ORTHOGONAL_GAP = 30;
 const ROUTE_PADDING = 14;
-const EDGE_ADD_RADIUS = 14;
-const EDGE_ADD_HIT_RADIUS = 18;
-const INSERT_NODE_GAP = CONNECTOR_LENGTH + EDGE_ADD_RADIUS * 2 + 12;
 const ADD_PANEL_WIDTH = 280;
 const ADD_PANEL_HEIGHT = 300;
-const EDGE_CORNER_RADIUS = 10;
-
-const getMethodColor = (method: string) => {
-  switch (method) {
-    case 'GET':
-      return '#3b82f6';
-    case 'POST':
-      return '#10b981';
-    case 'PUT':
-      return '#f59e0b';
-    case 'DELETE':
-      return '#ef4444';
-    case 'PATCH':
-      return '#8b5cf6';
-    default:
-      return '#6b7280';
-  }
-};
+const MIN_NODE_VERTICAL_GAP = 80;
+const MIN_NODE_HORIZONTAL_GAP = 40;
 
 const drawRoundedRect = (ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) => {
   const radius = Math.min(r, w / 2, h / 2);
@@ -128,6 +109,23 @@ const drawRoundedRect = (ctx: CanvasRenderingContext2D, x: number, y: number, w:
   ctx.arcTo(x, y + h, x, y, radius);
   ctx.arcTo(x, y, x + w, y, radius);
   ctx.closePath();
+};
+
+const drawDefaultIcon = (ctx: CanvasRenderingContext2D, centerX: number, centerY: number, scale: number) => {
+  const outerRadius = 22 / scale;
+  const innerRadius = 14 / scale;
+  const lineWidth = 2 / scale;
+  
+  ctx.strokeStyle = '#9ca3af';
+  ctx.lineWidth = lineWidth;
+  
+  ctx.beginPath();
+  ctx.arc(centerX, centerY, outerRadius, 0, Math.PI * 2);
+  ctx.stroke();
+  
+  ctx.beginPath();
+  ctx.arc(centerX, centerY, innerRadius, 0, Math.PI * 2);
+  ctx.stroke();
 };
 
 const snapToGrid = (value: number, gridSize: number) => Math.round(value / gridSize) * gridSize;
@@ -142,7 +140,6 @@ const isRectOverlap = (a: { x: number; y: number; w: number; h: number }, b: { x
 
 type Point = { x: number; y: number };
 type RouteObstacle = { id: string; x: number; y: number; w: number; h: number };
-type EdgeAddAnchor = { key: string; x: number; y: number; afterRequestId: string | null };
 
 const isPointInsideRect = (point: Point, rect: { x1: number; y1: number; x2: number; y2: number }) =>
   point.x > rect.x1 && point.x < rect.x2 && point.y > rect.y1 && point.y < rect.y2;
@@ -351,178 +348,43 @@ const tryBuildOrthogonalPath = (
   return simplifyOrthogonalPath(path);
 };
 
-const buildOrthogonalPath = (
-  start: Point,
-  end: Point,
-  obstacles: RouteObstacle[],
-  canvasWidth: number,
-  canvasHeight: number,
-  ignoreIds: string[] = [],
-  gap: number = ORTHOGONAL_GAP
-) => {
-  const routed = tryBuildOrthogonalPath(start, end, obstacles, canvasWidth, canvasHeight, ignoreIds, gap);
-  if (routed) return routed;
-  return buildFallbackPath(start, end, gap);
-};
-
-const getArrowAngle = (points: Point[]) => {
-  for (let i = points.length - 1; i > 0; i -= 1) {
-    const a = points[i - 1];
-    const b = points[i];
-    if (a.x !== b.x || a.y !== b.y) {
-      return Math.atan2(b.y - a.y, b.x - a.x);
-    }
-  }
-  return -Math.PI / 2;
-};
-
-const getPolylineMidPoint = (points: Point[]) => {
-  if (points.length < 2) return points[0] || { x: 0, y: 0 };
-  let total = 0;
-  const lengths: number[] = [];
-  for (let i = 1; i < points.length; i += 1) {
-    const seg = Math.abs(points[i].x - points[i - 1].x) + Math.abs(points[i].y - points[i - 1].y);
-    lengths.push(seg);
-    total += seg;
-  }
-  if (total === 0) return points[0];
-  const half = total / 2;
-  let acc = 0;
-  for (let i = 1; i < points.length; i += 1) {
-    const seg = lengths[i - 1];
-    if (acc + seg >= half) {
-      const remain = half - acc;
-      const a = points[i - 1];
-      const b = points[i];
-      if (a.x === b.x) {
-        const dir = b.y >= a.y ? 1 : -1;
-        return { x: a.x, y: a.y + dir * remain };
-      }
-      const dir = b.x >= a.x ? 1 : -1;
-      return { x: a.x + dir * remain, y: a.y };
-    }
-    acc += seg;
-  }
-  return points[points.length - 1];
-};
-
-const drawRoundedOrthogonalPath = (ctx: CanvasRenderingContext2D, points: Point[], radius: number) => {
-  if (points.length === 0) return;
-  if (points.length === 1) {
-    ctx.moveTo(points[0].x, points[0].y);
-    return;
-  }
-
-  ctx.moveTo(points[0].x, points[0].y);
-  for (let i = 1; i < points.length - 1; i += 1) {
-    const prev = points[i - 1];
-    const curr = points[i];
-    const next = points[i + 1];
-    const dx1 = curr.x - prev.x;
-    const dy1 = curr.y - prev.y;
-    const dx2 = next.x - curr.x;
-    const dy2 = next.y - curr.y;
-
-    const len1 = Math.abs(dx1) + Math.abs(dy1);
-    const len2 = Math.abs(dx2) + Math.abs(dy2);
-    if (len1 === 0 || len2 === 0) {
-      ctx.lineTo(curr.x, curr.y);
-      continue;
-    }
-
-    const cornerRadius = Math.min(radius, len1 / 2, len2 / 2);
-    const ux1 = dx1 === 0 ? 0 : dx1 > 0 ? 1 : -1;
-    const uy1 = dy1 === 0 ? 0 : dy1 > 0 ? 1 : -1;
-    const ux2 = dx2 === 0 ? 0 : dx2 > 0 ? 1 : -1;
-    const uy2 = dy2 === 0 ? 0 : dy2 > 0 ? 1 : -1;
-
-    const p1 = { x: curr.x - ux1 * cornerRadius, y: curr.y - uy1 * cornerRadius };
-    const p2 = { x: curr.x + ux2 * cornerRadius, y: curr.y + uy2 * cornerRadius };
-
-    ctx.lineTo(p1.x, p1.y);
-    ctx.quadraticCurveTo(curr.x, curr.y, p2.x, p2.y);
-  }
-  const last = points[points.length - 1];
-  ctx.lineTo(last.x, last.y);
-};
-
-const drawOrthogonalArrow = (
+const drawCurveConnection = (
   ctx: CanvasRenderingContext2D,
   start: Point,
   end: Point,
-  obstacles: RouteObstacle[],
-  canvasWidth: number,
-  canvasHeight: number,
-  ignoreIds: string[],
   color: string,
   scale: number
 ) => {
-  const points = buildOrthogonalPath(start, end, obstacles, canvasWidth, canvasHeight, ignoreIds);
-  if (points.length < 2) return points;
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const distance = Math.sqrt(dx * dx + dy * dy);
+  const curvature = Math.min(Math.max(distance * 0.5, 30), 100);
+  
+  const cp1x = start.x;
+  const cp1y = start.y + curvature;
+  const cp2x = end.x;
+  const cp2y = end.y - curvature;
 
   ctx.strokeStyle = color;
   ctx.lineWidth = 2 / scale;
-  ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
   ctx.beginPath();
-  drawRoundedOrthogonalPath(ctx, points, EDGE_CORNER_RADIUS);
+  ctx.moveTo(start.x, start.y);
+  ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, end.x, end.y);
   ctx.stroke();
-
-  const angle = getArrowAngle(points);
-  const arrowSize = 8 / scale;
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.moveTo(end.x, end.y);
-  ctx.lineTo(
-    end.x - Math.cos(angle - Math.PI / 6) * arrowSize,
-    end.y - Math.sin(angle - Math.PI / 6) * arrowSize
-  );
-  ctx.lineTo(
-    end.x - Math.cos(angle + Math.PI / 6) * arrowSize,
-    end.y - Math.sin(angle + Math.PI / 6) * arrowSize
-  );
-  ctx.closePath();
-  ctx.fill();
-  return points;
-};
-
-const buildFallbackPath = (
-  start: { x: number; y: number },
-  end: { x: number; y: number },
-  gap: number = ORTHOGONAL_GAP
-) => {
-  const exitY = start.y + gap;
-  const entryY = end.y - gap;
-
-  if (entryY >= exitY) {
-    return [
-      start,
-      { x: start.x, y: exitY },
-      { x: end.x, y: exitY },
-      end,
-    ];
-  }
-
-  const sideX = end.x >= start.x ? Math.max(start.x, end.x) + gap : Math.min(start.x, end.x) - gap;
-
-  return [
-    start,
-    { x: start.x, y: exitY },
-    { x: sideX, y: exitY },
-    { x: sideX, y: entryY },
-    { x: end.x, y: entryY },
-    end,
-  ];
 };
 
 export const WorkflowPage: React.FC = () => {
-  const { workflows, selectedWorkflowId, setWorkflowState, addWorkflow, updateWorkflow, deleteWorkflow, setSelectedWorkflow, removeRequestFromWorkflow, updateWorkflowRequestInputValue } = useWorkflowStore();
+  const { workflows, selectedWorkflowId, setWorkflowState, addWorkflow, updateWorkflow, deleteWorkflow, setSelectedWorkflow, removeRequestFromWorkflow, updateWorkflowRequestInputValue, addEdge, removeEdge } = useWorkflowStore();
   const [availableRequests, setAvailableRequests] = useState<WorkflowAvailableRequest[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
   const [running, setRunning] = useState(false);
   const [results, setResults] = useState<any[]>([]);
   const [detailDrawerOpen, setDetailDrawerOpen] = useState(false);
+  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+  const [connectingFrom, setConnectingFrom] = useState<{ nodeId: string; pointType: 'output' } | null>(null);
+  const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null);
   const [selectedResult, setSelectedResult] = useState<any | null>(null);
   const [nodePositions, setNodePositions] = useState<Record<string, { x: number; y: number }>>({});
   const nodePositionsRef = React.useRef<Record<string, { x: number; y: number }>>({});
@@ -544,7 +406,6 @@ export const WorkflowPage: React.FC = () => {
   const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
   const canvasContainerRef = React.useRef<HTMLDivElement | null>(null);
   const addPanelRef = React.useRef<HTMLDivElement | null>(null);
-  const edgeAddAnchorsRef = React.useRef<EdgeAddAnchor[]>([]);
   const dragRef = React.useRef<{
     id: string | null;
     startX: number;
@@ -737,7 +598,7 @@ export const WorkflowPage: React.FC = () => {
     const observer = new ResizeObserver(updateSize);
     observer.observe(container);
     return () => observer.disconnect();
-  }, [selectedWorkflowId]);
+  }, [selectedWorkflowId, isLoadingState]);
 
   React.useEffect(() => {
     const container = canvasContainerRef.current;
@@ -761,7 +622,7 @@ export const WorkflowPage: React.FC = () => {
           selectedWorkflow.nodePositions?.[req.id] ||
           prev[req.id] || {
             x: centerX,
-            y: triggerPos.y + TRIGGER_HEIGHT + CONNECTOR_LENGTH + 40 + index * (NODE_HEIGHT + CONNECTOR_LENGTH),
+            y: triggerPos.y + TRIGGER_HEIGHT + MIN_NODE_VERTICAL_GAP + index * (NODE_HEIGHT + MIN_NODE_VERTICAL_GAP),
           };
         index += 1;
       }
@@ -863,14 +724,6 @@ export const WorkflowPage: React.FC = () => {
     }
 
     const compactMode = view.scale < COMPACT_NODE_SCALE;
-    const edgeAnchors: EdgeAddAnchor[] = [];
-    const routeObstacles: RouteObstacle[] = selectedWorkflow.requests
-      .map((req) => {
-        const pos = nodePositionsRef.current[req.id];
-        if (!pos) return null;
-        return { id: req.id, x: pos.x, y: pos.y, w: NODE_WIDTH, h: NODE_HEIGHT };
-      })
-      .filter(Boolean) as RouteObstacle[];
 
     // Trigger node
     drawRoundedRect(ctx, triggerPos.x, triggerPos.y, TRIGGER_WIDTH, TRIGGER_HEIGHT, 12);
@@ -888,166 +741,178 @@ export const WorkflowPage: React.FC = () => {
       ctx.fillText('点击顶部按钮运行', triggerPos.x + 16, triggerPos.y + 56);
     }
 
-    // Draw orthogonal arrows to show execution order.
-    if (selectedWorkflow.requests.length > 0) {
-      const firstPos = nodePositionsRef.current[selectedWorkflow.requests[0].id];
-      if (firstPos) {
-        drawOrthogonalArrow(
-          ctx,
-          { x: triggerPos.x + TRIGGER_WIDTH / 2, y: triggerPos.y + TRIGGER_HEIGHT },
-          { x: firstPos.x + NODE_WIDTH / 2, y: firstPos.y },
-          routeObstacles,
-          canvasSize.width,
-          canvasSize.height,
-          [selectedWorkflow.requests[0].id],
-          '#6b7280',
-          view.scale
-        );
+    // Draw connections based on edges
+    const edges = selectedWorkflow.edges || [];
+    for (const edge of edges) {
+      let startPos: { x: number; y: number } | null = null;
+      let endPos: { x: number; y: number } | null = null;
+
+      if (edge.sourceId === 'trigger') {
+        startPos = { x: triggerPos.x + TRIGGER_WIDTH / 2, y: triggerPos.y + TRIGGER_HEIGHT };
+      } else {
+        const sourceNodePos = nodePositionsRef.current[edge.sourceId];
+        if (sourceNodePos) {
+          startPos = { x: sourceNodePos.x + NODE_WIDTH / 2, y: sourceNodePos.y + NODE_HEIGHT };
+        }
       }
-    }
-    for (let i = 0; i < selectedWorkflow.requests.length - 1; i += 1) {
-      const currentReq = selectedWorkflow.requests[i];
-      const nextReq = selectedWorkflow.requests[i + 1];
-      const currentPos = nodePositionsRef.current[currentReq.id];
-      const nextPos = nodePositionsRef.current[nextReq.id];
-      if (!currentPos || !nextPos) continue;
-      const points = drawOrthogonalArrow(
-        ctx,
-        { x: currentPos.x + NODE_WIDTH / 2, y: currentPos.y + NODE_HEIGHT },
-        { x: nextPos.x + NODE_WIDTH / 2, y: nextPos.y },
-        routeObstacles,
-        canvasSize.width,
-        canvasSize.height,
-        [currentReq.id, nextReq.id],
-        '#6b7280',
-        view.scale
-      );
-      if (points.length >= 2) {
-        const mid = getPolylineMidPoint(points);
-        edgeAnchors.push({
-          key: `edge-add-${currentReq.id}-${nextReq.id}`,
-          x: mid.x,
-          y: mid.y,
-          afterRequestId: currentReq.id,
-        });
+
+      const targetNodePos = nodePositionsRef.current[edge.targetId];
+      if (targetNodePos) {
+        endPos = { x: targetNodePos.x + NODE_WIDTH / 2, y: targetNodePos.y };
+      }
+
+      if (startPos && endPos) {
+        drawCurveConnection(ctx, startPos, endPos, '#6b7280', view.scale);
       }
     }
 
-    // Extend a short tail below the last node (or trigger when empty) with an add button.
-    if (selectedWorkflow.requests.length > 0) {
-      const lastReq = selectedWorkflow.requests[selectedWorkflow.requests.length - 1];
-      const lastPos = nodePositionsRef.current[lastReq.id];
-      if (lastPos) {
-        const tailStartX = lastPos.x + NODE_WIDTH / 2;
-        const tailStartY = lastPos.y + NODE_HEIGHT;
-        const tailLength = Math.max(26, Math.floor(CONNECTOR_LENGTH * 0.55));
-        const tailEndY = tailStartY + tailLength;
+    // Draw preview line while connecting
+    if (connectingFrom && mousePos) {
+      let startPos: { x: number; y: number } | null = null;
+      
+      if (connectingFrom.nodeId === 'trigger') {
+        startPos = { x: triggerPos.x + TRIGGER_WIDTH / 2, y: triggerPos.y + TRIGGER_HEIGHT };
+      } else {
+        const sourcePos = nodePositionsRef.current[connectingFrom.nodeId];
+        if (sourcePos) {
+          startPos = { x: sourcePos.x + NODE_WIDTH / 2, y: sourcePos.y + NODE_HEIGHT };
+        }
+      }
 
-        ctx.strokeStyle = '#94a3b8';
+      if (startPos) {
+        ctx.strokeStyle = '#60a5fa';
         ctx.lineWidth = 2 / view.scale;
+        ctx.setLineDash([5, 5]);
         ctx.beginPath();
-        ctx.moveTo(tailStartX, tailStartY);
-        ctx.lineTo(tailStartX, tailEndY);
+        ctx.moveTo(startPos.x, startPos.y);
+        ctx.lineTo(mousePos.x, mousePos.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+
+    // Draw trigger output connector point (always visible on hover of trigger area)
+    const triggerOutputY = triggerPos.y + TRIGGER_HEIGHT;
+    const triggerOutputX = triggerPos.x + TRIGGER_WIDTH / 2;
+    const isTriggerHovered = hoveredNodeId === 'trigger';
+    const outputRadius = (isTriggerHovered || connectingFrom?.nodeId === 'trigger') ? 8 / view.scale : 6 / view.scale;
+    ctx.fillStyle = (isTriggerHovered || connectingFrom?.nodeId === 'trigger') ? '#60a5fa' : '#9ca3af';
+    ctx.beginPath();
+    ctx.arc(triggerOutputX, triggerOutputY, outputRadius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2 / view.scale;
+    ctx.stroke();
+
+    selectedWorkflow.requests.forEach((req, reqIndex) => {
+      const pos = nodePositions[req.id] || { x: 24, y: 24 };
+      const isSelected = req.id === selectedNodeId;
+
+      drawRoundedRect(ctx, pos.x, pos.y, NODE_SIZE, NODE_SIZE, 12);
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+      ctx.strokeStyle = isSelected ? '#60a5fa' : '#e5e7eb';
+      ctx.lineWidth = (isSelected ? 2 : 1) / view.scale;
+      ctx.stroke();
+
+      const centerX = pos.x + NODE_SIZE / 2;
+      const centerY = pos.y + NODE_SIZE / 2;
+      
+      if (req.iconUrl) {
+        const img = new Image();
+        img.src = req.iconUrl;
+        if (img.complete && img.naturalWidth > 0) {
+          const iconSize = 44 / view.scale;
+          ctx.drawImage(img, centerX - iconSize / 2, centerY - iconSize / 2, iconSize, iconSize);
+        } else {
+          drawDefaultIcon(ctx, centerX, centerY, view.scale);
+        }
+      } else {
+        drawDefaultIcon(ctx, centerX, centerY, view.scale);
+      }
+
+      const nameX = pos.x + NODE_SIZE + 8;
+      const nameY = pos.y + NODE_SIZE / 2 + 4;
+      ctx.fillStyle = '#111827';
+      ctx.font = '500 12px sans-serif';
+      const rawName = req.name || `请求 ${reqIndex + 1}`;
+      const maxNameWidth = 120;
+      let displayName = rawName;
+      if (ctx.measureText(rawName).width > maxNameWidth) {
+        while (ctx.measureText(displayName + '…').width > maxNameWidth && displayName.length > 0) {
+          displayName = displayName.slice(0, -1);
+        }
+        displayName += '…';
+      }
+      ctx.fillText(displayName, nameX, nameY);
+
+      // Draw input connector point (top)
+      const isNodeHovered = hoveredNodeId === req.id;
+      const inputX = pos.x + NODE_SIZE / 2;
+      const inputY = pos.y;
+      const inputRadius = (isNodeHovered || connectingFrom) ? 8 / view.scale : 6 / view.scale;
+      ctx.fillStyle = (isNodeHovered || connectingFrom) ? '#60a5fa' : '#9ca3af';
+      ctx.beginPath();
+      ctx.arc(inputX, inputY, inputRadius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2 / view.scale;
+      ctx.stroke();
+
+      // Draw output connector point (bottom)
+      const outputX = pos.x + NODE_SIZE / 2;
+      const outputY = pos.y + NODE_HEIGHT;
+      const outputRadius = (isNodeHovered || connectingFrom?.nodeId === req.id) ? 8 / view.scale : 6 / view.scale;
+      ctx.fillStyle = (isNodeHovered || connectingFrom?.nodeId === req.id) ? '#60a5fa' : '#9ca3af';
+      ctx.beginPath();
+      ctx.arc(outputX, outputY, outputRadius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2 / view.scale;
+      ctx.stroke();
+
+      if (isSelected) {
+        const toolbarWidth = 60;
+        const toolbarHeight = 28;
+        const toolbarX = pos.x + NODE_SIZE / 2 - toolbarWidth / 2;
+        const toolbarY = pos.y - toolbarHeight - 8;
+        
+        drawRoundedRect(ctx, toolbarX, toolbarY, toolbarWidth, toolbarHeight, 6);
+        ctx.fillStyle = '#ffffff';
+        ctx.fill();
+        ctx.strokeStyle = '#d1d5db';
+        ctx.lineWidth = 1 / view.scale;
         ctx.stroke();
 
-        edgeAnchors.push({
-          key: `tail-add-${lastReq.id}`,
-          x: tailStartX,
-          y: tailEndY,
-          afterRequestId: lastReq.id,
-        });
+        const btn1X = toolbarX + 20;
+        const btn1Y = toolbarY + toolbarHeight / 2;
+        ctx.strokeStyle = '#6b7280';
+        ctx.lineWidth = 1.5 / view.scale;
+        ctx.beginPath();
+        ctx.moveTo(btn1X - 4, btn1Y - 4);
+        ctx.lineTo(btn1X + 4, btn1Y - 4);
+        ctx.lineTo(btn1X + 4, btn1Y + 4);
+        ctx.lineTo(btn1X - 4, btn1Y + 4);
+        ctx.closePath();
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(btn1X + 2, btn1Y - 4);
+        ctx.lineTo(btn1X + 6, btn1Y);
+        ctx.lineTo(btn1X + 2, btn1Y + 4);
+        
+        const btn2X = toolbarX + 40;
+        const btn2Y = toolbarY + toolbarHeight / 2;
+        ctx.strokeStyle = '#ef4444';
+        ctx.lineWidth = 1.5 / view.scale;
+        ctx.beginPath();
+        ctx.moveTo(btn2X - 4, btn2Y - 4);
+        ctx.lineTo(btn2X + 4, btn2Y + 4);
+        ctx.moveTo(btn2X + 4, btn2Y - 4);
+        ctx.lineTo(btn2X - 4, btn2Y + 4);
+        ctx.stroke();
       }
-    } else {
-      const tailStartX = triggerPos.x + TRIGGER_WIDTH / 2;
-      const tailStartY = triggerPos.y + TRIGGER_HEIGHT;
-      const tailLength = Math.max(26, Math.floor(CONNECTOR_LENGTH * 0.55));
-      const tailEndY = tailStartY + tailLength;
-
-      ctx.strokeStyle = '#94a3b8';
-      ctx.lineWidth = 2 / view.scale;
-      ctx.beginPath();
-      ctx.moveTo(tailStartX, tailStartY);
-      ctx.lineTo(tailStartX, tailEndY);
-      ctx.stroke();
-
-      edgeAnchors.push({
-        key: 'tail-add-trigger',
-        x: tailStartX,
-        y: tailEndY,
-        afterRequestId: null,
-      });
-    }
-
-    edgeAddAnchorsRef.current = edgeAnchors;
-    for (const anchor of edgeAnchors) {
-      ctx.fillStyle = '#ffffff';
-      ctx.strokeStyle = '#60a5fa';
-      ctx.lineWidth = 2 / view.scale;
-      ctx.beginPath();
-      ctx.arc(anchor.x, anchor.y, EDGE_ADD_RADIUS, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(anchor.x - 6, anchor.y);
-      ctx.lineTo(anchor.x + 6, anchor.y);
-      ctx.moveTo(anchor.x, anchor.y - 6);
-      ctx.lineTo(anchor.x, anchor.y + 6);
-      ctx.stroke();
-    }
-
-    selectedWorkflow.requests.forEach((req, index) => {
-      const pos = nodePositions[req.id] || { x: 24, y: 24 };
-      const status = runStatusMap[req.id]?.status;
-
-      drawRoundedRect(ctx, pos.x, pos.y, NODE_WIDTH, NODE_HEIGHT, 12);
-      ctx.fillStyle = '#ffffff';
-      ctx.fill();
-      ctx.strokeStyle = req.id === selectedNodeId ? '#60a5fa' : '#e5e7eb';
-      ctx.lineWidth = (req.id === selectedNodeId ? 2 : 1) / view.scale;
-      ctx.stroke();
-
-      // Method pill
-      ctx.fillStyle = getMethodColor(req.method);
-      drawRoundedRect(ctx, pos.x + 12, pos.y + 12, 58, 20, 10);
-      ctx.fill();
-      ctx.fillStyle = '#ffffff';
-      ctx.font = '600 11px sans-serif';
-      ctx.fillText(req.method, pos.x + 17, pos.y + 26);
-
-      // Name
-      ctx.fillStyle = '#111827';
-      ctx.font = '600 13px sans-serif';
-      const rawName = req.name || `请求 ${index + 1}`;
-      const displayName = compactMode && rawName.length > 10 ? `${rawName.slice(0, 10)}…` : rawName;
-      ctx.fillText(displayName, pos.x + 12, pos.y + 52);
-
-      // Status
-      if (!compactMode) {
-        ctx.fillStyle = '#6b7280';
-        ctx.font = '12px sans-serif';
-        const statusText = status === 'success' ? '成功' : status === 'error' ? '失败' : '未运行';
-        ctx.fillText('状态:', pos.x + 12, pos.y + 76);
-        if (status === 'success') ctx.fillStyle = '#16a34a';
-        else if (status === 'error') ctx.fillStyle = '#dc2626';
-        else ctx.fillStyle = '#9ca3af';
-        ctx.fillText(statusText, pos.x + 48, pos.y + 76);
-      }
-
-      // Delete button
-      ctx.fillStyle = '#f3f4f6';
-      ctx.beginPath();
-      ctx.arc(pos.x + NODE_WIDTH - 16, pos.y + 16, 8, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = '#9ca3af';
-      ctx.lineWidth = 1 / view.scale;
-      ctx.beginPath();
-      ctx.moveTo(pos.x + NODE_WIDTH - 20, pos.y + 12);
-      ctx.lineTo(pos.x + NODE_WIDTH - 12, pos.y + 20);
-      ctx.moveTo(pos.x + NODE_WIDTH - 12, pos.y + 12);
-      ctx.lineTo(pos.x + NODE_WIDTH - 20, pos.y + 20);
-      ctx.stroke();
     });
-  }, [selectedWorkflow, nodePositions, runStatusMap, selectedNodeId, view, canvasSize, triggerPos]);
+  }, [selectedWorkflow, nodePositions, runStatusMap, selectedNodeId, view, canvasSize, triggerPos, hoveredNodeId, connectingFrom, mousePos]);
 
   const handleRename = (id: string, newName: string) => {
     if (newName.trim()) {
@@ -1074,8 +939,39 @@ const handleRunWorkflow = async () => {
     try {
       const workflowResults: any[] = [];
       const localRequestOutputs: any[] = [];
+      const edges = selectedWorkflow.edges || [];
 
-      for (const [index, request] of selectedWorkflow.requests.entries()) {
+      const getExecutionOrder = (): string[] => {
+        const order: string[] = [];
+        const visited = new Set<string>();
+        
+        const findNextNodes = (nodeId: string): string[] => {
+          return edges
+            .filter((e) => e.sourceId === nodeId)
+            .map((e) => e.targetId);
+        };
+
+        const traverse = (nodeId: string) => {
+          if (visited.has(nodeId)) return;
+          visited.add(nodeId);
+          order.push(nodeId);
+          
+          const nextNodes = findNextNodes(nodeId);
+          for (const nextId of nextNodes) {
+            traverse(nextId);
+          }
+        };
+
+        traverse('trigger');
+        return order.filter((id) => id !== 'trigger');
+      };
+
+      const executionOrder = getExecutionOrder();
+
+      for (const requestId of executionOrder) {
+        const request = selectedWorkflow.requests.find((r) => r.id === requestId);
+        if (!request) continue;
+
         try {
           let headers = request.headers.reduce(
             (acc, h) => (h.key ? { ...acc, [h.key]: h.value } : acc),
@@ -1102,24 +998,25 @@ const handleRunWorkflow = async () => {
 
           if (request.inputFields && request.inputFields.length > 0) {
             for (const field of request.inputFields) {
+
               const value = request.inputValues?.[field.name];
 
- if (value === undefined && field.required) {
-            throw new Error(`${field.name} 是必填字段`);
-          }
-
-          let processedValue = value;
-          if (value && value.startsWith('{{') && value.endsWith('}}')) {
-            const ref = value.slice(2, -2);
-            const [requestId, fieldName] = ref.split('.');
-            const refRequest = localRequestOutputs.find((output) => output.requestId === requestId);
-            if (refRequest) {
-              const refOutput = refRequest.outputs.find((output) => output.name === fieldName);
-              if (refOutput) {
-                processedValue = refOutput.value;
+              if (value === undefined && field.required) {
+                throw new Error(`${field.name} 是必填字段`);
               }
-            }
-          }
+
+              let processedValue = value;
+              if (value && value.startsWith('{{') && value.endsWith('}}')) {
+                const ref = value.slice(2, -2);
+                const [refRequestId, fieldName] = ref.split('.');
+                const refRequest = localRequestOutputs.find((output) => output.requestId === refRequestId);
+                if (refRequest) {
+                  const refOutput = refRequest.outputs.find((out) => out.name === fieldName);
+                  if (refOutput) {
+                    processedValue = refOutput.value;
+                  }
+                }
+              }
 
               if (processedValue !== undefined) {
                 const mapping = mappings.find((m: any) => m.inputName === field.name && m.key);
@@ -1263,39 +1160,60 @@ const handleRunWorkflow = async () => {
       const req = selectedWorkflow.requests[i];
       const pos = nodePositions[req.id];
       if (!pos) continue;
-      if (x >= pos.x && x <= pos.x + NODE_WIDTH && y >= pos.y && y <= pos.y + NODE_HEIGHT) {
+      if (x >= pos.x && x <= pos.x + NODE_SIZE && y >= pos.y && y <= pos.y + NODE_SIZE) {
         return req;
       }
     }
     return null;
   };
 
-  const hitTestDelete = (x: number, y: number, nodePos: { x: number; y: number }) => {
-    const cx = nodePos.x + NODE_WIDTH - 16;
-    const cy = nodePos.y + 16;
-    const dx = x - cx;
-    const dy = y - cy;
-    return dx * dx + dy * dy <= 64;
-  };
-
-  const hitTestEdgeAdd = (x: number, y: number) => {
-    for (const anchor of edgeAddAnchorsRef.current) {
-      const dx = x - anchor.x;
-      const dy = y - anchor.y;
-      if (dx * dx + dy * dy <= EDGE_ADD_HIT_RADIUS * EDGE_ADD_HIT_RADIUS) {
-        return anchor;
+  const hitTestToolbar = (x: number, y: number, nodePos: { x: number; y: number }): 'duplicate' | 'delete' | null => {
+    const toolbarWidth = 60;
+    const toolbarHeight = 28;
+    const toolbarX = nodePos.x + NODE_SIZE / 2 - toolbarWidth / 2;
+    const toolbarY = nodePos.y - toolbarHeight - 8;
+    
+    if (x >= toolbarX && x <= toolbarX + toolbarWidth && y >= toolbarY && y <= toolbarY + toolbarHeight) {
+      if (x < toolbarX + 30) {
+        return 'duplicate';
       }
+      return 'delete';
     }
     return null;
   };
 
-  const openAddPanel = (anchor: { x: number; y: number; afterRequestId: string | null }) => {
-    setAddPanelPos({
-      x: anchor.x,
-      y: anchor.y,
-      afterRequestId: anchor.afterRequestId,
-    });
-    setAddPanelOpen(true);
+  const hitTestConnectorPoint = (x: number, y: number): { nodeId: string; pointType: 'input' | 'output' } | null => {
+    if (!selectedWorkflow) return null;
+
+    // Check trigger output point
+    const triggerOutputX = triggerPos.x + TRIGGER_WIDTH / 2;
+    const triggerOutputY = triggerPos.y + TRIGGER_HEIGHT;
+    const triggerDist = Math.sqrt((x - triggerOutputX) ** 2 + (y - triggerOutputY) ** 2);
+    if (triggerDist <= 12) {
+      return { nodeId: 'trigger', pointType: 'output' };
+    }
+
+    // Check node input/output points
+    for (const req of selectedWorkflow.requests) {
+      const pos = nodePositionsRef.current[req.id];
+      if (!pos) continue;
+
+      const inputX = pos.x + NODE_SIZE / 2;
+      const inputY = pos.y;
+      const inputDist = Math.sqrt((x - inputX) ** 2 + (y - inputY) ** 2);
+      if (inputDist <= 12) {
+        return { nodeId: req.id, pointType: 'input' };
+      }
+
+      const outputX = pos.x + NODE_SIZE / 2;
+      const outputY = pos.y + NODE_HEIGHT;
+      const outputDist = Math.sqrt((x - outputX) ** 2 + (y - outputY) ** 2);
+      if (outputDist <= 12) {
+        return { nodeId: req.id, pointType: 'output' };
+      }
+    }
+
+    return null;
   };
 
   const getAddPanelStyle = () => {
@@ -1337,110 +1255,6 @@ const handleRunWorkflow = async () => {
     setSelectedNodeId(id);
   };
 
-  const findNonOverlappingPosition = (id: string, desired: { x: number; y: number }) => {
-    if (!selectedWorkflow) return desired;
-    const others = selectedWorkflow.requests
-      .filter((req) => req.id !== id)
-      .map((req) => nodePositionsRef.current[req.id])
-      .filter(Boolean) as Array<{ x: number; y: number }>;
-    const clamp = (x: number, y: number) => ({
-      x: Math.max(0, snapToGrid(x, 20)),
-      y: Math.max(0, snapToGrid(y, 20)),
-    });
-    const tryPos = (x: number, y: number) => {
-      const rect = { x, y, w: NODE_WIDTH, h: NODE_HEIGHT };
-      return !others.some((p) => isRectOverlap(rect, { x: p.x, y: p.y, w: NODE_WIDTH, h: NODE_HEIGHT }));
-    };
-    const base = clamp(desired.x, desired.y);
-    if (tryPos(base.x, base.y)) return base;
-    const step = 20;
-    for (let r = step; r <= 240; r += step) {
-      for (let dx = -r; dx <= r; dx += step) {
-        for (let dy = -r; dy <= r; dy += step) {
-          if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
-          const candidate = clamp(base.x + dx, base.y + dy);
-          if (tryPos(candidate.x, candidate.y)) return candidate;
-        }
-      }
-    }
-    return base;
-  };
-
-  const canRouteAllConnections = (positions: Record<string, { x: number; y: number }>) => {
-    if (!selectedWorkflow) return true;
-    const obstacles: RouteObstacle[] = selectedWorkflow.requests
-      .map((req) => {
-        const pos = positions[req.id];
-        if (!pos) return null;
-        return { id: req.id, x: pos.x, y: pos.y, w: NODE_WIDTH, h: NODE_HEIGHT };
-      })
-      .filter(Boolean) as RouteObstacle[];
-
-    if (selectedWorkflow.requests.length > 0) {
-      const firstReq = selectedWorkflow.requests[0];
-      const firstPos = positions[firstReq.id];
-      if (firstPos) {
-        const triggerToFirst = tryBuildOrthogonalPath(
-          { x: triggerPos.x + TRIGGER_WIDTH / 2, y: triggerPos.y + TRIGGER_HEIGHT },
-          { x: firstPos.x + NODE_WIDTH / 2, y: firstPos.y },
-          obstacles,
-          canvasSize.width,
-          canvasSize.height,
-          [firstReq.id]
-        );
-        if (!triggerToFirst) return false;
-      }
-    }
-
-    for (let i = 0; i < selectedWorkflow.requests.length - 1; i += 1) {
-      const currentReq = selectedWorkflow.requests[i];
-      const nextReq = selectedWorkflow.requests[i + 1];
-      const currentPos = positions[currentReq.id];
-      const nextPos = positions[nextReq.id];
-      if (!currentPos || !nextPos) continue;
-      const routed = tryBuildOrthogonalPath(
-        { x: currentPos.x + NODE_WIDTH / 2, y: currentPos.y + NODE_HEIGHT },
-        { x: nextPos.x + NODE_WIDTH / 2, y: nextPos.y },
-        obstacles,
-        canvasSize.width,
-        canvasSize.height,
-        [currentReq.id, nextReq.id]
-      );
-      if (!routed) return false;
-    }
-
-    return true;
-  };
-
-  const findConnectionSafePosition = (id: string, desired: { x: number; y: number }) => {
-    const base = findNonOverlappingPosition(id, desired);
-    const basePositions = { ...nodePositionsRef.current, [id]: base };
-    if (canRouteAllConnections(basePositions)) {
-      // Prefer rerouting lines first; keep dropped position if routes are valid.
-      return base;
-    }
-
-    const visited = new Set<string>([`${base.x},${base.y}`]);
-    const step = 20;
-    for (let r = step; r <= 360; r += step) {
-      for (let dx = -r; dx <= r; dx += step) {
-        for (let dy = -r; dy <= r; dy += step) {
-          if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
-          const candidate = findNonOverlappingPosition(id, { x: base.x + dx, y: base.y + dy });
-          const key = `${candidate.x},${candidate.y}`;
-          if (visited.has(key)) continue;
-          visited.add(key);
-          const candidatePositions = { ...nodePositionsRef.current, [id]: candidate };
-          if (canRouteAllConnections(candidatePositions)) {
-            return candidate;
-          }
-        }
-      }
-    }
-
-    return base;
-  };
-
   const handleRequestSelect = (requestKey: string) => {
     if (!selectedWorkflow) return;
     const request = availableRequests.find((r) => `${r.ownerUserId || 'self'}:${r.id}` === requestKey);
@@ -1480,17 +1294,17 @@ const handleRunWorkflow = async () => {
       let targetY = addPanelPos.y - NODE_HEIGHT / 2;
 
       if (!prevReq && existingRequests.length === 0) {
-        // First real node: place below trigger with clear gap for connector and add button.
+        // First real node: place below trigger with minimum gap.
         targetX = triggerPos.x + TRIGGER_WIDTH / 2 - NODE_WIDTH / 2;
-        targetY = triggerPos.y + TRIGGER_HEIGHT + INSERT_NODE_GAP;
+        targetY = triggerPos.y + TRIGGER_HEIGHT + MIN_NODE_VERTICAL_GAP;
       } else if (prevPos && !nextPos) {
-        // Append at tail: place directly under previous node with visible gap.
+        // Append at tail: place directly under previous node with minimum gap.
         targetX = prevPos.x;
-        targetY = prevPos.y + NODE_HEIGHT + INSERT_NODE_GAP;
+        targetY = prevPos.y + NODE_HEIGHT + MIN_NODE_VERTICAL_GAP;
       } else if (prevPos && nextPos) {
-        // Insert in middle: place between previous and next with spacing on both sides.
-        const minY = prevPos.y + NODE_HEIGHT + INSERT_NODE_GAP;
-        const maxY = nextPos.y - NODE_HEIGHT - INSERT_NODE_GAP;
+        // Insert in middle: place between previous and next with minimum spacing.
+        const minY = prevPos.y + NODE_HEIGHT + MIN_NODE_VERTICAL_GAP;
+        const maxY = nextPos.y - NODE_HEIGHT - MIN_NODE_VERTICAL_GAP;
         targetX = (prevPos.x + nextPos.x) / 2;
 
         if (minY <= maxY) {
@@ -1541,10 +1355,33 @@ const handleRunWorkflow = async () => {
       return;
     }
 
-    const edgeAdd = hitTestEdgeAdd(x, y);
-    if (edgeAdd) {
-      openAddPanel({ x: edgeAdd.x, y: edgeAdd.y, afterRequestId: edgeAdd.afterRequestId });
+    // Check for connector point interaction
+    const connectorPoint = hitTestConnectorPoint(x, y);
+    if (connectorPoint && connectorPoint.pointType === 'output') {
+      setConnectingFrom({ nodeId: connectorPoint.nodeId, pointType: 'output' });
+      setMousePos({ x, y });
       return;
+    }
+
+    if (selectedNodeId) {
+      const selectedPos = nodePositions[selectedNodeId];
+      if (selectedPos) {
+        const toolbarAction = hitTestToolbar(x, y, selectedPos);
+        if (toolbarAction === 'duplicate') {
+          const newId = useWorkflowStore.getState().duplicateWorkflowRequest(selectedWorkflow.id, selectedNodeId);
+          if (newId) {
+            setSelectedNodeId(newId);
+            message.success('节点已复制');
+          }
+          return;
+        }
+        if (toolbarAction === 'delete') {
+          removeRequestFromWorkflow(selectedWorkflow.id, selectedNodeId);
+          setSelectedNodeId(null);
+          message.success('节点已删除');
+          return;
+        }
+      }
     }
 
     const node = hitTestNode(x, y);
@@ -1555,11 +1392,6 @@ const handleRunWorkflow = async () => {
     }
     const pos = nodePositions[node.id];
     if (!pos) return;
-    if (hitTestDelete(x, y, pos)) {
-      removeRequestFromWorkflow(selectedWorkflow.id, node.id);
-      message.success('请求已移除');
-      return;
-    }
     dragRef.current.id = node.id;
     dragRef.current.startX = x;
     dragRef.current.startY = y;
@@ -1571,6 +1403,31 @@ const handleRunWorkflow = async () => {
   const handleCanvasMouseMove = (event: React.MouseEvent<HTMLCanvasElement>) => {
     if (!selectedWorkflow) return;
     const { x, y } = getCanvasPoint(event);
+
+    // Update mouse position for preview line
+    if (connectingFrom) {
+      setMousePos({ x, y });
+    }
+
+    // Update hover state
+    const connectorPoint = hitTestConnectorPoint(x, y);
+    if (connectorPoint) {
+      setHoveredNodeId(connectorPoint.nodeId);
+    } else {
+      const node = hitTestNode(x, y);
+      if (node) {
+        setHoveredNodeId(node.id);
+      } else {
+        // Check if hovering trigger
+        if (x >= triggerPos.x && x <= triggerPos.x + TRIGGER_WIDTH &&
+            y >= triggerPos.y && y <= triggerPos.y + TRIGGER_HEIGHT) {
+          setHoveredNodeId('trigger');
+        } else {
+          setHoveredNodeId(null);
+        }
+      }
+    }
+
     if (dragRef.current.mode === 'pan') {
       const dx = (event.clientX - dragRef.current.startX) / view.scale;
       const dy = (event.clientY - dragRef.current.startY) / view.scale;
@@ -1604,46 +1461,34 @@ const handleRunWorkflow = async () => {
   const handleCanvasMouseUp = (event: React.MouseEvent<HTMLCanvasElement>) => {
     if (!selectedWorkflow) return;
     const { x, y } = getCanvasPoint(event);
+
+    // Handle connection creation
+    if (connectingFrom) {
+      const connectorPoint = hitTestConnectorPoint(x, y);
+      if (connectorPoint && connectorPoint.pointType === 'input') {
+        // Create edge
+        addEdge(selectedWorkflow.id, connectingFrom.nodeId, connectorPoint.nodeId);
+        message.success('连接已创建');
+      }
+      setConnectingFrom(null);
+      setMousePos(null);
+      return;
+    }
+
     const dragId = dragRef.current.id;
     const moved = dragRef.current.moved;
 
     if (dragRef.current.mode === 'pan') {
-      const stillClick =
-        Math.abs(event.clientX - dragRef.current.startX) <= 3 &&
-        Math.abs(event.clientY - dragRef.current.startY) <= 3;
-      if (stillClick && !dragId) {
-        const edgeAdd = hitTestEdgeAdd(x, y);
-        if (edgeAdd) {
-          openAddPanel({ x: edgeAdd.x, y: edgeAdd.y, afterRequestId: edgeAdd.afterRequestId });
-        }
-      }
       dragRef.current.mode = null;
       return;
-    }
-
-    if (!dragId) {
-      const edgeAdd = hitTestEdgeAdd(x, y);
-      if (edgeAdd) {
-        openAddPanel({ x: edgeAdd.x, y: edgeAdd.y, afterRequestId: edgeAdd.afterRequestId });
-      }
     }
 
     if (dragId) {
       if (!moved) {
         setSelectedNodeId(dragId);
-      }
-    }
-    if (dragId && moved) {
-      const current = nodePositionsRef.current[dragId];
-      if (current) {
-        const adjusted = findConnectionSafePosition(dragId, current);
-        if (adjusted.x !== current.x || adjusted.y !== current.y) {
-          setNodePositions((prev) => {
-            const next = { ...prev, [dragId]: adjusted };
-            updateWorkflow(selectedWorkflow.id, { nodePositions: next });
-            return next;
-          });
-        } else {
+      } else {
+        const current = nodePositionsRef.current[dragId];
+        if (current) {
           updateWorkflow(selectedWorkflow.id, { nodePositions: { ...nodePositionsRef.current } });
         }
       }
@@ -1953,7 +1798,7 @@ const handleRunWorkflow = async () => {
                                         icon={<ImportOutlined />}
                                         onClick={(e) => {
                                           e.stopPropagation();
-                                          if (result.data) {
+                                          if (result.data && selectedWorkflowId) {
                                             const workflow = workflows.find((wf) => wf.id === selectedWorkflowId);
                                             if (workflow) {
                                               const request = workflow.requests.find((req) => req.id === result.requestId);
@@ -2114,7 +1959,9 @@ const handleRunWorkflow = async () => {
               </div>
           </>
         ) : (
-          <Empty description="请创建或选择一个工作流" />
+          <div className="flex-1 flex items-center justify-center">
+            <Empty description="请创建或选择一个工作流" />
+          </div>
         )}
         </div>
 

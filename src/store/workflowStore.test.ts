@@ -1,447 +1,190 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { createWorkflowStore, WorkflowStore } from './workflowStore';
+import { useWorkflowStore } from './workflowStore';
+import type { WorkflowRequest } from './workflowStore';
 
-describe('Workflow Parameter Handling', () => {
-  let store: WorkflowStore;
+describe('WorkflowStore', () => {
+  let store: typeof useWorkflowStore;
 
   beforeEach(() => {
-    store = createWorkflowStore();
-  });
-
-  describe('Parameter Configuration', () => {
-    it('should add input parameters to a workflow request', () => {
-      const workflowId = 'workflow1';
-      const requestId = 'request1';
-      
-      store.addWorkflow(workflowId);
-      store.addRequestToWorkflow(workflowId, requestId);
-      
-      const param = {
-        name: 'userId',
-        type: 'string',
-        value: '123',
-        description: 'User identifier'
-      };
-      
-      store.addInputParameter(workflowId, requestId, param);
-      
-      const workflow = store.workflows.get(workflowId);
-      const request = workflow?.requests.find(req => req.id === requestId);
-      
-      expect(request?.inputParams).toHaveLength(1);
-      expect(request?.inputParams[0]).toEqual(param);
-    });
-
-    it('should add output parameters to a workflow request', () => {
-      const workflowId = 'workflow1';
-      const requestId = 'request1';
-      
-      store.addWorkflow(workflowId);
-      store.addRequestToWorkflow(workflowId, requestId);
-      
-      const param = {
-        name: 'userId',
-        path: 'data.id',
-        description: 'Extract user ID from response'
-      };
-      
-      store.addOutputParameter(workflowId, requestId, param);
-      
-      const workflow = store.workflows.get(workflowId);
-      const request = workflow?.requests.find(req => req.id === requestId);
-      
-      expect(request?.outputParams).toHaveLength(1);
-      expect(request?.outputParams[0]).toEqual(param);
-    });
-
-    it('should validate parameter names', () => {
-      const workflowId = 'workflow1';
-      const requestId = 'request1';
-      
-      store.addWorkflow(workflowId);
-      store.addRequestToWorkflow(workflowId, requestId);
-      
-      const validParam = {
-        name: 'validParam',
-        type: 'string',
-        value: 'test'
-      };
-      
-      store.addInputParameter(workflowId, requestId, validParam);
-      
-      expect(() => {
-        store.addInputParameter(workflowId, requestId, {
-          name: 'validParam',
-          type: 'string',
-          value: 'duplicate'
-        });
-      }).toThrow('Parameter name "validParam" already exists for this request');
+    store = useWorkflowStore;
+    store.setState({
+      workflows: [],
+      selectedWorkflowId: null,
     });
   });
 
-  describe('Parameter Passing Between Nodes', () => {
-    it('should pass parameters from one request to another', () => {
-      const workflowId = 'workflow1';
-      const request1Id = 'request1';
-      const request2Id = 'request2';
+  describe('Workflow Management', () => {
+    it('should add a workflow', () => {
+      store.getState().addWorkflow();
       
-      store.addWorkflow(workflowId);
-      store.addRequestToWorkflow(workflowId, request1Id);
-      store.addRequestToWorkflow(workflowId, request2Id);
-      
-      // Add output parameter to first request
-      store.addOutputParameter(workflowId, request1Id, {
-        name: 'userId',
-        path: 'data.id',
-        description: 'User ID from first request'
-      });
-      
-      // Add input parameter to second request that references the output
-      store.addInputParameter(workflowId, request2Id, {
-        name: 'userId',
-        type: 'string',
-        value: '{{workflow.requests[0].outputParams[0].name}}',
-        description: 'User ID from first request'
-      });
-      
-      const workflow = store.workflows.get(workflowId);
-      const request1 = workflow?.requests.find(req => req.id === request1Id);
-      const request2 = workflow?.requests.find(req => req.id === request2Id);
-      
-      expect(request1?.outputParams).toHaveLength(1);
-      expect(request2?.inputParams).toHaveLength(1);
-      expect(request2?.inputParams[0].value).toBe('{{workflow.requests[0].outputParams[0].name}}');
+      const state = store.getState();
+      expect(state.workflows).toHaveLength(1);
+      expect(state.selectedWorkflowId).toBe(state.workflows[0].id);
     });
 
-    it('should handle complex parameter references', () => {
-      const workflowId = 'workflow1';
-      const request1Id = 'request1';
-      const request2Id = 'request2';
+    it('should update a workflow', () => {
+      store.getState().addWorkflow();
+      const workflowId = store.getState().workflows[0].id;
       
-      store.addWorkflow(workflowId);
-      store.addRequestToWorkflow(workflowId, request1Id);
-      store.addRequestToWorkflow(workflowId, request2Id);
+      store.getState().updateWorkflow(workflowId, { name: 'Updated Workflow' });
       
-      // Add output parameter to first request
-      store.addOutputParameter(workflowId, request1Id, {
-        name: 'token',
-        path: 'data.token',
-        description: 'Authentication token'
-      });
+      const workflow = store.getState().workflows.find(w => w.id === workflowId);
+      expect(workflow?.name).toBe('Updated Workflow');
+    });
+
+    it('should delete a workflow and select the next one', () => {
+      store.getState().addWorkflow();
+      store.getState().addWorkflow();
       
-      // Add input parameter to second request with complex reference
-      store.addInputParameter(workflowId, request2Id, {
-        name: 'authToken',
-        type: 'string',
-        value: '{{workflow.requests[0].outputParams[0].name}}',
-        description: 'Token from first request'
-      });
+      const stateBeforeDelete = store.getState();
+      const firstId = stateBeforeDelete.workflows[0].id;
+      const secondId = stateBeforeDelete.workflows[1].id;
       
-      const workflow = store.workflows.get(workflowId);
-      const request2 = workflow?.requests.find(req => req.id === request2Id);
+      store.getState().deleteWorkflow(firstId);
       
-      expect(request2?.inputParams[0].value).toBe('{{workflow.requests[0].outputParams[0].name}}');
+      const state = store.getState();
+      expect(state.workflows).toHaveLength(1);
+      expect(state.selectedWorkflowId).toBe(secondId);
     });
   });
 
-  describe('Parameter Validation', () => {
-    it('should validate input parameter types', () => {
-      const workflowId = 'workflow1';
-      const requestId = 'request1';
-      
-      store.addWorkflow(workflowId);
-      store.addRequestToWorkflow(workflowId, requestId);
-      
-      // Valid number parameter
-      store.addInputParameter(workflowId, requestId, {
-        name: 'count',
-        type: 'number',
-        value: '10',
-        description: 'Number of items'
-      });
-      
-      // Invalid number parameter
-      expect(() => {
-        store.addInputParameter(workflowId, requestId, {
-          name: 'invalidCount',
-          type: 'number',
-          value: 'not-a-number',
-          description: 'Invalid number'
-        });
-      }).toThrow('Invalid value for parameter "invalidCount": not-a-number');
+  describe('Request Management', () => {
+    let workflowId: string;
+
+    beforeEach(() => {
+      store.getState().addWorkflow();
+      workflowId = store.getState().workflows[0].id;
     });
 
-    it('should validate required parameters', () => {
-      const workflowId = 'workflow1';
-      const requestId = 'request1';
+    it('should add a request to workflow', () => {
+      const request: Partial<WorkflowRequest> = {
+        id: 'test-request-1',
+        name: 'Test Request',
+        method: 'GET',
+        url: 'https://example.com',
+        headers: [],
+        params: [],
+        body: '',
+        inputFields: [],
+        outputFields: [],
+        inputValues: {},
+      };
       
-      store.addWorkflow(workflowId);
-      store.addRequestToWorkflow(workflowId, requestId);
+      store.getState().addRequestToWorkflow(workflowId, request);
       
-      // Add required parameter without value
-      store.addInputParameter(workflowId, requestId, {
-        name: 'apiKey',
-        type: 'string',
-        required: true,
-        description: 'API key'
-      });
+      const workflow = store.getState().workflows.find(w => w.id === workflowId);
+      expect(workflow?.requests).toHaveLength(1);
+      expect(workflow?.requests[0].name).toBe('Test Request');
+    });
+
+    it('should remove a request from workflow', () => {
+      const request: Partial<WorkflowRequest> = {
+        id: 'test-request-1',
+        name: 'Test Request',
+        method: 'GET',
+        url: 'https://example.com',
+        headers: [],
+        params: [],
+        body: '',
+        inputFields: [],
+        outputFields: [],
+        inputValues: {},
+      };
       
-      const workflow = store.workflows.get(workflowId);
-      const request = workflow?.requests.find(req => req.id === requestId);
+      store.getState().addRequestToWorkflow(workflowId, request);
+      store.getState().removeRequestFromWorkflow(workflowId, 'test-request-1');
       
-      expect(request?.inputParams[0].required).toBe(true);
-      expect(request?.inputParams[0].value).toBe('');
+      const workflow = store.getState().workflows.find(w => w.id === workflowId);
+      expect(workflow?.requests).toHaveLength(0);
+    });
+
+    it('should update input values', () => {
+      const request: Partial<WorkflowRequest> = {
+        id: 'test-request-1',
+        name: 'Test Request',
+        method: 'GET',
+        url: 'https://example.com',
+        headers: [],
+        params: [],
+        body: '',
+        inputFields: [{ name: 'userId', type: 'params', required: true }],
+        outputFields: [],
+        inputValues: {},
+      };
+      
+      store.getState().addRequestToWorkflow(workflowId, request);
+      store.getState().updateWorkflowRequestInputValue(workflowId, 'test-request-1', 'userId', '123');
+      
+      const workflow = store.getState().workflows.find(w => w.id === workflowId);
+      expect(workflow?.requests[0].inputValues['userId']).toBe('123');
+    });
+
+    it('should reorder workflow requests', () => {
+      const request1: Partial<WorkflowRequest> = {
+        id: 'request-1',
+        name: 'Request 1',
+        method: 'GET',
+        url: 'https://example.com/1',
+        headers: [],
+        params: [],
+        body: '',
+        inputFields: [],
+        outputFields: [],
+        inputValues: {},
+      };
+      const request2: Partial<WorkflowRequest> = {
+        id: 'request-2',
+        name: 'Request 2',
+        method: 'POST',
+        url: 'https://example.com/2',
+        headers: [],
+        params: [],
+        body: '',
+        inputFields: [],
+        outputFields: [],
+        inputValues: {},
+      };
+      
+      store.getState().addRequestToWorkflow(workflowId, request1);
+      store.getState().addRequestToWorkflow(workflowId, request2);
+      
+      store.getState().reorderWorkflowRequests(workflowId, 1, 0);
+      
+      const workflow = store.getState().workflows.find(w => w.id === workflowId);
+      expect(workflow?.requests[0].id).toBe('request-2');
+      expect(workflow?.requests[1].id).toBe('request-1');
     });
   });
 
-  describe('Parameter Extraction', () => {
-    it('should extract parameters from response', () => {
-      const workflowId = 'workflow1';
-      const requestId = 'request1';
-      
-      store.addWorkflow(workflowId);
-      store.addRequestToWorkflow(workflowId, requestId);
-      
-      // Add output parameter with path
-      store.addOutputParameter(workflowId, requestId, {
-        name: 'userId',
-        path: 'data.user.id',
-        description: 'Extract user ID'
-      });
-      
-      const response = {
-        data: {
-          user: {
-            id: '123',
-            name: 'John Doe'
-          }
-        }
-      };
-      
-      const extractedParams = store.extractOutputParameters(workflowId, requestId, response);
-      
-      expect(extractedParams).toEqual({
-        userId: '123'
-      });
+  describe('Duplicate Request', () => {
+    let workflowId: string;
+
+    beforeEach(() => {
+      store.getState().addWorkflow();
+      workflowId = store.getState().workflows[0].id;
     });
 
-    it('should handle nested path extraction', () => {
-      const workflowId = 'workflow1';
-      const requestId = 'request1';
-      
-      store.addWorkflow(workflowId);
-      store.addRequestToWorkflow(workflowId, requestId);
-      
-      // Add output parameter with nested path
-      store.addOutputParameter(workflowId, requestId, {
-        name: 'userName',
-        path: 'data.user.profile.name',
-        description: 'Extract user name'
-      });
-      
-      const response = {
-        data: {
-          user: {
-            profile: {
-              name: 'John Doe',
-              age: 30
-            }
-          }
-        }
+    it('should duplicate a workflow request', () => {
+      const request: Partial<WorkflowRequest> = {
+        id: 'test-request-1',
+        name: 'Test Request',
+        method: 'GET',
+        url: 'https://example.com',
+        headers: [],
+        params: [],
+        body: '',
+        inputFields: [{ name: 'userId', type: 'params', required: true }],
+        outputFields: [],
+        inputValues: { userId: '123' },
       };
       
-      const extractedParams = store.extractOutputParameters(workflowId, requestId, response);
+      store.getState().addRequestToWorkflow(workflowId, request);
+      const newId = store.getState().duplicateWorkflowRequest(workflowId, 'test-request-1');
       
-      expect(extractedParams).toEqual({
-        userName: 'John Doe'
-      });
-    });
-
-    it('should handle array path extraction', () => {
-      const workflowId = 'workflow1';
-      const requestId = 'request1';
-      
-      store.addWorkflow(workflowId);
-      store.addRequestToWorkflow(workflowId, requestId);
-      
-      // Add output parameter with array path
-      store.addOutputParameter(workflowId, requestId, {
-        name: 'firstItemId',
-        path: 'data.items[0].id',
-        description: 'Extract first item ID'
-      });
-      
-      const response = {
-        data: {
-          items: [
-            { id: 'item1', name: 'Item 1' },
-            { id: 'item2', name: 'Item 2' }
-          ]
-        }
-      };
-      
-      const extractedParams = store.extractOutputParameters(workflowId, requestId, response);
-      
-      expect(extractedParams).toEqual({
-        firstItemId: 'item1'
-      });
-    });
-  });
-
-  describe('Workflow Execution', () => {
-    it('should execute workflow with parameter passing', async () => {
-      const workflowId = 'workflow1';
-      const request1Id = 'request1';
-      const request2Id = 'request2';
-      
-      store.addWorkflow(workflowId);
-      store.addRequestToWorkflow(workflowId, request1Id);
-      store.addRequestToWorkflow(workflowId, request2Id);
-      
-      // Add output parameter to first request
-      store.addOutputParameter(workflowId, request1Id, {
-        name: 'token',
-        path: 'data.token',
-        description: 'Authentication token'
-      });
-      
-      // Add input parameter to second request that references the output
-      store.addInputParameter(workflowId, request2Id, {
-        name: 'authToken',
-        type: 'string',
-        value: '{{workflow.requests[0].outputParams[0].name}}',
-        description: 'Token from first request'
-      });
-      
-      // Mock request execution
-      const mockExecuteRequest = async (requestId: string, params: any) => {
-        if (requestId === request1Id) {
-          return {
-            data: {
-              token: 'abc123',
-              user: { id: 'user1' }
-            }
-          };
-        } else if (requestId === request2Id) {
-          return {
-            data: {
-              success: true,
-              message: 'Request processed with token: ' + params.authToken
-            }
-          };
-        }
-        return { data: {} };
-      };
-      
-      const result = await store.executeWorkflow(workflowId, mockExecuteRequest);
-      
-      expect(result.success).toBe(true);
-      expect(result.results[request1Id].response?.data.token).toBe('abc123');
-      expect(result.results[request2Id].response?.data.message).toBe('Request processed with token: abc123');
-    });
-
-    it('should handle parameter substitution during execution', async () => {
-      const workflowId = 'workflow1';
-      const request1Id = 'request1';
-      const request2Id = 'request2';
-      
-      store.addWorkflow(workflowId);
-      store.addRequestToWorkflow(workflowId, request1Id);
-      store.addRequestToWorkflow(workflowId, request2Id);
-      
-      // Add output parameter to first request
-      store.addOutputParameter(workflowId, request1Id, {
-        name: 'userId',
-        path: 'data.user.id',
-        description: 'User ID'
-      });
-      
-      // Add input parameter to second request with substitution
-      store.addInputParameter(workflowId, request2Id, {
-        name: 'targetUserId',
-        type: 'string',
-        value: '{{workflow.requests[0].outputParams[0].name}}',
-        description: 'User ID from first request'
-      });
-      
-      // Mock request execution
-      const mockExecuteRequest = async (requestId: string, params: any) => {
-        if (requestId === request1Id) {
-          return {
-            data: {
-              user: { id: 'user123' }
-            }
-          };
-        } else if (requestId === request2Id) {
-          return {
-            data: {
-              target: params.targetUserId
-            }
-          };
-        }
-        return { data: {} };
-      };
-      
-      const result = await store.executeWorkflow(workflowId, mockExecuteRequest);
-      
-      expect(result.success).toBe(true);
-      expect(result.results[request2Id].response?.data.target).toBe('user123');
-    });
-  });
-
-  describe('Error Handling', () => {
-    it('should handle missing output parameters', async () => {
-      const workflowId = 'workflow1';
-      const request1Id = 'request1';
-      const request2Id = 'request2';
-      
-      store.addWorkflow(workflowId);
-      store.addRequestToWorkflow(workflowId, request1Id);
-      store.addRequestToWorkflow(workflowId, request2Id);
-      
-      // Add input parameter to second request that references non-existent output
-      store.addInputParameter(workflowId, request2Id, {
-        name: 'token',
-        type: 'string',
-        value: '{{workflow.requests[0].outputParams[0].name}}',
-        description: 'Token from first request'
-      });
-      
-      // Mock request execution that doesn't return the expected output
-      const mockExecuteRequest = async (requestId: string) => {
-        if (requestId === request1Id) {
-          return { data: {} }; // No token in response
-        }
-        return { data: {} };
-      };
-      
-      const result = await store.executeWorkflow(workflowId, mockExecuteRequest);
-      
-      expect(result.success).toBe(false);
-      expect(result.errors[request2Id]).toBe('Missing required parameter: token');
-    });
-
-    it('should handle invalid parameter references', () => {
-      const workflowId = 'workflow1';
-      const requestId = 'request1';
-      
-      store.addWorkflow(workflowId);
-      store.addRequestToWorkflow(workflowId, requestId);
-      
-      // Add input parameter with invalid reference
-      store.addInputParameter(workflowId, requestId, {
-        name: 'invalidParam',
-        type: 'string',
-        value: '{{nonexistent.param}}',
-        description: 'Invalid reference'
-      });
-      
-      const workflow = store.workflows.get(workflowId);
-      const request = workflow?.requests.find(req => req.id === requestId);
-      
-      expect(() => {
-        store.validateWorkflowParameters(workflowId);
-      }).toThrow('Invalid parameter reference: nonexistent.param');
+      const workflow = store.getState().workflows.find(w => w.id === workflowId);
+      expect(workflow?.requests).toHaveLength(2);
+      expect(workflow?.requests[1].id).toBe(newId);
+      expect(workflow?.requests[1].name).toBe('Test Request (副本)');
     });
   });
 });

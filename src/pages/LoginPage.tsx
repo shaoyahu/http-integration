@@ -63,17 +63,17 @@ export const LoginPage: React.FC = () => {
             name="username"
             rules={[{ required: true, message: '请输入用户名' }]}
           >
-            <Input placeholder="请输入用户名" />
+            <Input placeholder="请输入用户名" size="large" />
           </Form.Item>
           <Form.Item
             label="密码"
             name="password"
             rules={[{ required: true, message: '请输入密码' }]}
           >
-            <Input.Password placeholder="请输入密码" />
+            <Input.Password placeholder="请输入密码" size="large" />
           </Form.Item>
           <Form.Item className="!mb-2">
-            <Button type="primary" htmlType="submit" loading={isSubmitting} block>
+            <Button type="primary" htmlType="submit" loading={isSubmitting} block size="large">
               登录
             </Button>
           </Form.Item>
