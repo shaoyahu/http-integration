@@ -6,44 +6,10 @@ import { useWorkflowStore } from '../store/workflowStore';
 import Editor from '@monaco-editor/react';
 import { applyPathMapping, parseBodyValue, setNestedValue } from '../utils/requestPayload';
 import { fetchWorkflowAvailableRequests, fetchWorkflowState, healthCheck, proxyRequest, saveWorkflowState, type WorkflowAvailableRequest } from '../api/http';
+import { HTTP_METHOD_COLORS } from '../constants/http';
+import { formatResponseData } from '../utils/response';
 
 const { Sider, Content } = Layout;
-
-const methodColors: Record<string, string> = {
-  GET: 'blue',
-  POST: 'green',
-  PUT: 'orange',
-  DELETE: 'red',
-  PATCH: 'purple',
-};
-
-const formatResponseData = (data: any): string => {
-  if (data === null || data === undefined) {
-    return '';
-  }
-
-  if (typeof data === 'string') {
-    try {
-      const parsed = JSON.parse(data);
-      if (typeof parsed === 'object' && parsed !== null) {
-        return JSON.stringify(parsed, null, 2);
-      }
-    } catch (e) {
-      return data;
-    }
-    return data;
-  }
-
-  if (typeof data === 'object') {
-    try {
-      return JSON.stringify(data, null, 2);
-    } catch (e) {
-      return String(data);
-    }
-  }
-
-  return String(data);
-};
 
 const getErrorMessage = (error: unknown) => {
   if (axios.isAxiosError(error)) {
@@ -67,7 +33,7 @@ const getSaveStatusText = (isLoading: boolean, isSaving: boolean, saveError: str
   return '已保存';
 };
 
-const buildCurl = (url: string, method: string, params: Record<string, string>, body?: any) => {
+const buildCurl = (url: string, method: string, params: Record<string, string>, body?: unknown) => {
   let fullUrl = url;
   const entries = Object.entries(params || {});
   if (entries.length > 0) {
@@ -1657,7 +1623,7 @@ const handleRunWorkflow = async () => {
                               className="px-2 py-2 text-sm hover:bg-gray-50 cursor-pointer flex items-center gap-2"
                               onClick={() => focusNode(req.id)}
                             >
-                              <Tag color={methodColors[req.method] || 'default'} className="m-0">
+                              <Tag color={HTTP_METHOD_COLORS[req.method] || 'default'} className="m-0">
                                 {req.method}
                               </Tag>
                               <span className="truncate">{req.name}</span>
@@ -1862,7 +1828,7 @@ const handleRunWorkflow = async () => {
                             </div>
                             <div>
                               <div className="text-xs text-gray-500 mb-1">请求方法</div>
-                              <Tag color={methodColors[node.method] || 'default'}>{node.method}</Tag>
+                              <Tag color={HTTP_METHOD_COLORS[node.method] || 'default'}>{node.method}</Tag>
                             </div>
                             <div>
                               <div className="text-xs text-gray-500 mb-1">请求地址</div>
@@ -1935,7 +1901,7 @@ const handleRunWorkflow = async () => {
                             className="flex items-center gap-2 p-2 rounded hover:bg-gray-50 cursor-pointer"
                             onClick={() => handleRequestSelect(`${req.ownerUserId || 'self'}:${req.id}`)}
                           >
-                            <Tag color={methodColors[req.method] || 'default'} className="m-0">
+                            <Tag color={HTTP_METHOD_COLORS[req.method] || 'default'} className="m-0">
                               {req.method}
                             </Tag>
                             <span className="text-sm text-gray-800 truncate">{req.name}</span>

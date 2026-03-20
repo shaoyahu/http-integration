@@ -58,13 +58,13 @@ interface WorkflowStore {
   addWorkflow: () => void
   updateWorkflow: (id: string, updates: Partial<Workflow>) => void
   deleteWorkflow: (id: string) => void
-  addRequestToWorkflow: (workflowId: string, request: any) => void
+  addRequestToWorkflow: (workflowId: string, request: Partial<WorkflowRequest>) => void
   removeRequestFromWorkflow: (workflowId: string, requestId: string) => void
   updateWorkflowRequestInputValue: (workflowId: string, requestId: string, fieldName: string, value: string) => void
   reorderWorkflowRequests: (workflowId: string, oldIndex: number, newIndex: number) => void
   setSelectedWorkflow: (id: string | null) => void
   duplicateWorkflowRequest: (workflowId: string, requestId: string) => string | null
-  addOutputFieldsFromResponse: (workflowId: string, requestId: string, response: any) => void
+  addOutputFieldsFromResponse: (workflowId: string, requestId: string, response: unknown) => void
   addEdge: (workflowId: string, sourceId: string, targetId: string) => void
   removeEdge: (workflowId: string, edgeId: string) => void
   updateEdge: (workflowId: string, edgeId: string, sourceId: string, targetId: string) => void
@@ -175,12 +175,12 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
       const outputFields: OutputField[] = [];
       const visitedPaths = new Set<string>();
 
-      const traverse = (obj: any, path: string = '') => {
+      const traverse = (obj: unknown, path: string = '') => {
         if (typeof obj !== 'object' || obj === null) return;
 
-        for (const [key, value] of Object.entries(obj)) {
+        for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
           const currentPath = path ? `${path}.${key}` : key;
-          
+
           if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
             traverse(value, currentPath);
           } else if (typeof value !== 'object' || value === null) {
@@ -224,43 +224,44 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
     }),
   setSelectedWorkflow: (id) => set({ selectedWorkflowId: id }),
   duplicateWorkflowRequest: (workflowId, requestId) => {
-    const state = useWorkflowStore.getState();
-    const workflow = state.workflows.find((wf) => wf.id === workflowId);
-    if (!workflow) return null;
-    
-    const requestIndex = workflow.requests.findIndex((req) => req.id === requestId);
-    if (requestIndex === -1) return null;
-    
-    const originalRequest = workflow.requests[requestIndex];
-    const newId = Date.now().toString();
-    const duplicatedRequest: WorkflowRequest = {
-      ...originalRequest,
-      id: newId,
-      name: `${originalRequest.name} (副本)`,
-      inputValues: { ...originalRequest.inputValues },
-    };
-    
-    const newRequests = [...workflow.requests];
-    newRequests.splice(requestIndex + 1, 0, duplicatedRequest);
-    
-    const newNodePositions = {
-      ...workflow.nodePositions,
-      [newId]: workflow.nodePositions?.[requestId] 
-        ? { 
-            x: (workflow.nodePositions[requestId]?.x || 0) + NODE_WIDTH + 40, 
-            y: workflow.nodePositions[requestId]?.y || 0 
-          }
-        : { x: 0, y: 0 },
-    };
-    
-    useWorkflowStore.setState({
-      workflows: state.workflows.map((wf) =>
-        wf.id === workflowId 
-          ? { ...wf, updatedAt: Date.now(), requests: newRequests, nodePositions: newNodePositions }
-          : wf
-      ),
+    let newId: string | null = null;
+    set((state) => {
+      const workflow = state.workflows.find((wf) => wf.id === workflowId);
+      if (!workflow) return state;
+
+      const requestIndex = workflow.requests.findIndex((req) => req.id === requestId);
+      if (requestIndex === -1) return state;
+
+      const originalRequest = workflow.requests[requestIndex];
+      newId = Date.now().toString();
+      const duplicatedRequest: WorkflowRequest = {
+        ...originalRequest,
+        id: newId,
+        name: `${originalRequest.name} (副本)`,
+        inputValues: { ...originalRequest.inputValues },
+      };
+
+      const newRequests = [...workflow.requests];
+      newRequests.splice(requestIndex + 1, 0, duplicatedRequest);
+
+      const newNodePositions = {
+        ...workflow.nodePositions,
+        [newId]: workflow.nodePositions?.[requestId]
+          ? {
+              x: (workflow.nodePositions[requestId]?.x || 0) + NODE_WIDTH + 40,
+              y: workflow.nodePositions[requestId]?.y || 0,
+            }
+          : { x: 0, y: 0 },
+      };
+
+      return {
+        workflows: state.workflows.map((wf) =>
+          wf.id === workflowId
+            ? { ...wf, updatedAt: Date.now(), requests: newRequests, nodePositions: newNodePositions }
+            : wf
+        ),
+      };
     });
-    
     return newId;
   },
   addEdge: (workflowId, sourceId, targetId) =>

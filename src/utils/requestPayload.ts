@@ -10,21 +10,25 @@ export const applyPathMapping = (url: string, key: string, value: string) => {
   return url;
 };
 
-export const setNestedValue = (target: Record<string, any>, path: string, value: any) => {
+export const setNestedValue = <T extends Record<string, unknown>>(
+  target: T,
+  path: string,
+  value: unknown
+): void => {
   const segments = path.split('.').filter(Boolean);
   if (segments.length === 0) return;
-  let cursor = target;
+  let cursor: unknown = target;
   for (let i = 0; i < segments.length - 1; i += 1) {
     const key = segments[i];
-    if (!cursor[key] || typeof cursor[key] !== 'object') {
-      cursor[key] = {};
+    if (!cursor || typeof cursor !== 'object') {
+      (cursor as Record<string, unknown>)[key] = {};
     }
-    cursor = cursor[key];
+    cursor = (cursor as Record<string, unknown>)[key];
   }
-  cursor[segments[segments.length - 1]] = value;
+  (cursor as Record<string, unknown>)[segments[segments.length - 1]] = value;
 };
 
-export const parseBodyValue = (value: any) => {
+export const parseBodyValue = (value: unknown): unknown => {
   if (typeof value !== 'string') return value;
   const trimmed = value.trim();
   if (trimmed === '') return '';
@@ -34,7 +38,7 @@ export const parseBodyValue = (value: any) => {
   if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
     try {
       return JSON.parse(trimmed);
-    } catch (e) {
+    } catch {
       return value;
     }
   }

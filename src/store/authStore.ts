@@ -32,22 +32,22 @@ interface AuthState {
   initializeAuth: () => Promise<void>;
 }
 
+export const isAdminUser = (user: AuthUser): boolean => {
+  return (
+    user.role === USER_ROLES.ADMIN ||
+    user.permissions?.includes(USER_PERMISSIONS.ADMIN_PANEL) ||
+    (typeof user.username === 'string' && user.username.trim().toLowerCase() === 'admin')
+  );
+};
+
 const normalizeAuthUser = (user: AuthUser): AuthUser => ({
   ...user,
-  role: (
-    user.role === USER_ROLES.ADMIN
-    || user.permissions?.includes(USER_PERMISSIONS.ADMIN_PANEL)
-    || (typeof user.username === 'string' && user.username.trim().toLowerCase() === 'admin')
-  )
-    ? USER_ROLES.ADMIN
-    : USER_ROLES.USER,
-  permissions: (
-    user.role === USER_ROLES.ADMIN
-    || user.permissions?.includes(USER_PERMISSIONS.ADMIN_PANEL)
-    || (typeof user.username === 'string' && user.username.trim().toLowerCase() === 'admin')
-  )
+  role: isAdminUser(user) ? USER_ROLES.ADMIN : USER_ROLES.USER,
+  permissions: isAdminUser(user)
     ? [...ADMIN_ALL_PERMISSIONS]
-    : (Array.isArray(user.permissions) && user.permissions.length > 0 ? user.permissions : [...DEFAULT_USER_PERMISSIONS]),
+    : Array.isArray(user.permissions) && user.permissions.length > 0
+      ? user.permissions
+      : [...DEFAULT_USER_PERMISSIONS],
   mustChangePassword: Boolean(user.mustChangePassword),
 });
 

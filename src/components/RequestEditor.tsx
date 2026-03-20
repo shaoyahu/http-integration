@@ -1,56 +1,13 @@
 import React, { useEffect } from 'react';
 import { Form, Input, Select, Button, Tabs, Card, Row, Col, message, Drawer, Popconfirm } from 'antd';
 import { PlusOutlined, DeleteOutlined, InfoCircleOutlined } from '@ant-design/icons';
-import { useRequestStore } from '../store/requestStore';
+import { useRequestStore, type ParamField, type OutputField, type ApiMapping } from '../store/requestStore';
 import { proxyRequest } from '../api/http';
 import Editor from '@monaco-editor/react';
 import { applyPathMapping, parseBodyValue, setNestedValue } from '../utils/requestPayload';
+import { formatResponseData, parseResponseData } from '../utils/response';
 
 const { Option } = Select;
-
-const formatResponseData = (data: any): string => {
-  if (data === null || data === undefined) {
-    return '';
-  }
-
-  if (typeof data === 'string') {
-    try {
-      const parsed = JSON.parse(data);
-      if (typeof parsed === 'object' && parsed !== null) {
-        return JSON.stringify(parsed, null, 2);
-      }
-    } catch (e) {
-      return data;
-    }
-    return data;
-  }
-
-  if (typeof data === 'object') {
-    try {
-      return JSON.stringify(data, null, 2);
-    } catch (e) {
-      return String(data);
-    }
-  }
-
-  return String(data);
-};
-
-const parseResponseData = (data: any): any | null => {
-  if (data === null || data === undefined) return null;
-  if (typeof data === 'object') return data;
-  if (typeof data === 'string') {
-    try {
-      const parsed = JSON.parse(data);
-      if (typeof parsed === 'object' && parsed !== null) {
-        return parsed;
-      }
-    } catch (e) {
-      return null;
-    }
-  }
-  return null;
-};
 
 const hasPathPlaceholder = (url: string, key: string) => url.includes(`{${key}}`) || url.includes(`:${key}`);
 
@@ -74,9 +31,9 @@ export const RequestEditor: React.FC = () => {
     description: string;
     method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
     url: string;
-    inputFields: any[];
-    outputFields: any[];
-    apiMappings: any[];
+    inputFields: ParamField[];
+    outputFields: OutputField[];
+    apiMappings: ApiMapping[];
   } | null>(null);
 
   const selectedRequest = requests.find((req) => req.id === selectedRequestId);
@@ -221,10 +178,10 @@ export const RequestEditor: React.FC = () => {
     const outputFields: Array<{ name: string; path: string; description: string }> = [];
     const visitedPaths = new Set<string>();
 
-    const traverse = (obj: any, path: string = '') => {
+    const traverse = (obj: unknown, path: string = '') => {
       if (typeof obj !== 'object' || obj === null) return;
 
-      for (const [key, value] of Object.entries(obj)) {
+      for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
         const currentPath = path ? `${path}.${key}` : key;
         if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
           traverse(value, currentPath);
@@ -257,7 +214,7 @@ export const RequestEditor: React.FC = () => {
   const buildRequestPayload = (inputValueMap: Record<string, string>) => {
     const headers: Record<string, string> = {};
     const params: Record<string, string> = {};
-    const bodyObject: Record<string, any> = {};
+    const bodyObject: Record<string, unknown> = {};
     let url = selectedRequest?.url || '';
 
     const mappings = selectedRequest?.apiMappings || [];
@@ -282,7 +239,7 @@ export const RequestEditor: React.FC = () => {
     return { url, headers, params, body };
   };
 
-  const buildCurl = (url: string, method: string, params: Record<string, string>, body?: any) => {
+  const buildCurl = (url: string, method: string, params: Record<string, string>, body?: unknown) => {
     let fullUrl = url;
     const entries = Object.entries(params);
     if (entries.length > 0) {
@@ -368,11 +325,12 @@ export const RequestEditor: React.FC = () => {
       });
       setActiveTestTab('results');
       message.success('请求成功');
-    } catch (error: any) {
-      if (error?.errorFields) {
+    } catch (error: unknown) {
+      if (typeof error === 'object' && error !== null && 'errorFields' in error) {
         return;
       }
-      const errorData = error.response?.data || error.message || '请求失败';
+      const axiosError = error as { response?: { data?: unknown; status?: number }; message?: string };
+      const errorData = axiosError.response?.data || axiosError.message || '请求失败';
       setResponse({
         status: error.response?.status || 500,
         statusText: error.response?.statusText || 'Error',
@@ -404,16 +362,16 @@ export const RequestEditor: React.FC = () => {
     }
   };
 
-  const handleInputChange = (index: number, field: 'name' | 'type' | 'required' | 'description' | 'value', value: any) => {
+  const handleInputChange = (index: number, field: 'name' | 'type' | 'required' | 'description' | 'value', value: string | boolean) => {
     if (!isEditingBasicInfo) return;
     if (selectedRequest) {
       const newInputFields = [...selectedRequest.inputFields];
       const previousName = newInputFields[index]?.name;
       newInputFields[index] = { ...newInputFields[index], [field]: value };
-      const updates: any = { inputFields: newInputFields };
+      const updates: Partial<import('../store/requestStore').HttpRequest> = { inputFields: newInputFields };
       if (field === 'name' && previousName && previousName !== value) {
         updates.apiMappings = (selectedRequest.apiMappings || []).map((mapping) =>
-          mapping.inputName === previousName ? { ...mapping, inputName: value } : mapping
+          mapping.inputName === previousName ? { ...mapping, inputName: value as string } : mapping
         );
       }
       updateRequest(selectedRequest.id, updates);

@@ -13,8 +13,8 @@ export const api = axios.create({
 let healthCheckCache:
   | {
       timestamp: number;
-      data: any;
-      promise: Promise<any> | null;
+      data: unknown;
+      promise: Promise<unknown>;
     }
   | null = null;
 
@@ -22,7 +22,7 @@ export interface ProxyRequest {
   url: string;
   method: string;
   headers: Record<string, string>;
-  body?: any;
+  body?: unknown;
   params?: Record<string, string>;
 }
 
@@ -37,13 +37,13 @@ export const healthCheck = async () => {
     return healthCheckCache.data;
   }
   if (healthCheckCache?.promise) {
-    return await healthCheckCache.promise;
+    return healthCheckCache.promise;
   }
   const promise = api.get('/health').then((response) => {
     healthCheckCache = {
       timestamp: Date.now(),
       data: response.data,
-      promise: null,
+      promise,
     };
     return response.data;
   }).catch((error) => {
@@ -55,7 +55,7 @@ export const healthCheck = async () => {
     data: null,
     promise,
   };
-  return await promise;
+  return promise;
 };
 
 export interface RequestStatePayload {

@@ -34,6 +34,7 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { healthCheck } from '../api/http';
+import { HTTP_METHOD_COLORS } from '../constants/http';
 
 const { Sider } = Layout;
 
@@ -44,14 +45,6 @@ interface SidebarProps {
   lastSavedAt: number | null;
   onPersistNow: () => Promise<void>;
 }
-
-const methodColors: Record<string, string> = {
-  GET: 'blue',
-  POST: 'green',
-  PUT: 'orange',
-  DELETE: 'red',
-  PATCH: 'purple',
-};
 
 interface SortableFolderProps {
   folder: { id: string; name: string; expanded: boolean };
@@ -256,7 +249,7 @@ function SortableItem({
       <div className={`flex-1 ${inFolder ? 'px-3' : 'px-4'}`}>
         <div className="flex items-center justify-between w-full">
           <div className="flex items-center gap-2 min-w-0 flex-1">
-            <Tag color={methodColors[req.method] || 'default'} className="m-0 flex-shrink-0">
+            <Tag color={HTTP_METHOD_COLORS[req.method] || 'default'} className="m-0 flex-shrink-0">
               {req.method}
             </Tag>
             {editingId === req.id ? (
