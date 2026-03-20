@@ -1,18 +1,9 @@
 import { api } from './http';
 import type { UserPermission, UserRole } from '../constants/auth';
+import type { AuthUser } from '../store/authStore';
 import axios from 'axios';
 
-export interface AuthUser {
-  id: string;
-  username: string;
-  nickname?: string;
-  avatarUrl?: string;
-  mustChangePassword?: boolean;
-  lastLoginAt: string | null;
-  role: UserRole;
-  permissions: UserPermission[];
-  identities?: Array<{ id: string; name: string; permissions: UserPermission[] }>;
-}
+export type { AuthUser };
 
 export interface AuthSuccessResponse {
   user: AuthUser;
@@ -185,6 +176,10 @@ export const updateAdminUserIdentities = async (userId: string, identityIds: str
   return response.data.user;
 };
 
+export const deleteAdminUser = async (userId: string) => {
+  await api.delete(`/admin/users/${encodeURIComponent(userId)}`);
+};
+
 export const createAdminIdentity = async (payload: { name: string; permissionIds: UserPermission[] }) => {
   const response = await api.post<{ identity: AdminIdentityItem }>('/admin/identities', payload);
   return response.data.identity;
@@ -193,4 +188,8 @@ export const createAdminIdentity = async (payload: { name: string; permissionIds
 export const updateAdminIdentity = async (identityId: string, payload: { name: string; permissionIds: UserPermission[] }) => {
   const response = await api.put<{ identity: AdminIdentityItem }>(`/admin/identities/${encodeURIComponent(identityId)}`, payload);
   return response.data.identity;
+};
+
+export const deleteAdminIdentity = async (identityId: string) => {
+  await api.delete(`/admin/identities/${encodeURIComponent(identityId)}`);
 };

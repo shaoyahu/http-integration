@@ -1,9 +1,8 @@
 import React from 'react';
 import { Navigate, Outlet } from 'react-router-dom';
 import { Spin } from 'antd';
-import { useAuthStore } from '../store/authStore';
-import type { AuthUser } from '../store/authStore';
-import { USER_PERMISSIONS, USER_ROLES, type UserPermission } from '../constants/auth';
+import { useAuthStore, isAdminUser, type AuthUser } from '../store/authStore';
+import { USER_PERMISSIONS, type UserPermission } from '../constants/auth';
 
 const CenteredLoading: React.FC = () => (
   <div className="h-screen w-screen flex items-center justify-center bg-white">
@@ -15,11 +14,7 @@ export const getDefaultAuthorizedPath = (user: AuthUser | null): string => {
   if (!user) {
     return '/login';
   }
-  const permissions = Array.isArray(user.permissions) ? user.permissions : [];
-  const isAdmin = user.role === USER_ROLES.ADMIN
-    || permissions.includes(USER_PERMISSIONS.ADMIN_PANEL)
-    || (typeof user.username === 'string' && user.username.trim().toLowerCase() === 'admin');
-  if (isAdmin) {
+  if (isAdminUser(user)) {
     return '/admin';
   }
   return getDefaultPlatformPath(user);
@@ -59,10 +54,7 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ requiredPermissi
   }
 
   const userPermissions = Array.isArray(user.permissions) ? user.permissions : [];
-  const isAdmin = user.role === USER_ROLES.ADMIN
-    || userPermissions.includes(USER_PERMISSIONS.ADMIN_PANEL)
-    || (typeof user.username === 'string' && user.username.trim().toLowerCase() === 'admin');
-  if (isAdmin) {
+  if (isAdminUser(user)) {
     return <Outlet />;
   }
   if (requiredPermissions.length > 0 && !requiredPermissions.some((permission) => userPermissions.includes(permission))) {

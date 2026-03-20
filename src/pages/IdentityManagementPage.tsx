@@ -1,9 +1,10 @@
 import React from 'react';
-import { Alert, Button, Card, Form, Input, Layout, Modal, Select, Spin, Table, Tag, Typography, message } from 'antd';
+import { Alert, Button, Card, Form, Input, Layout, Modal, Select, Spin, Table, Tag, Typography, message, Popconfirm } from 'antd';
 import type { TableColumnsType } from 'antd';
 import axios from 'axios';
 import {
   createAdminIdentity,
+  deleteAdminIdentity,
   fetchAdminIdentities,
   fetchAdminPermissionPoints,
   updateAdminIdentity,
@@ -29,6 +30,7 @@ export const IdentityManagementPage: React.FC = () => {
   const [saving, setSaving] = React.useState(false);
   const [modalOpen, setModalOpen] = React.useState(false);
   const [editingIdentity, setEditingIdentity] = React.useState<AdminIdentityItem | null>(null);
+  const [deletingIdentities, setDeletingIdentities] = React.useState<Record<string, boolean>>({});
   const [permissionPoints, setPermissionPoints] = React.useState<AdminPermissionPoint[]>([]);
   const [identities, setIdentities] = React.useState<AdminIdentityItem[]>([]);
 
@@ -102,6 +104,23 @@ export const IdentityManagementPage: React.FC = () => {
     }
   };
 
+  const handleDeleteIdentity = async (identity: AdminIdentityItem) => {
+    if (identity.userCount > 0) {
+      message.warning(`该身份下有 ${identity.userCount} 个用户，无法删除`);
+      return;
+    }
+    setDeletingIdentities((prev) => ({ ...prev, [identity.id]: true }));
+    try {
+      await deleteAdminIdentity(identity.id);
+      setIdentities((prev) => prev.filter((item) => item.id !== identity.id));
+      message.success('身份已删除');
+    } catch (error) {
+      message.error(toErrorMessage(error));
+    } finally {
+      setDeletingIdentities((prev) => ({ ...prev, [identity.id]: false }));
+    }
+  };
+
   const columns: TableColumnsType<AdminIdentityItem> = [
     { title: '身份名称', dataIndex: 'name', key: 'name', width: 180 },
     {
@@ -118,15 +137,34 @@ export const IdentityManagementPage: React.FC = () => {
         </div>
       ),
     },
-    { title: '数量', dataIndex: 'userCount', key: 'userCount', width: 120 },
+    { title: '关联用户数', dataIndex: 'userCount', key: 'userCount', width: 120 },
     {
       title: '操作',
       key: 'action',
-      width: 100,
+      width: 150,
       render: (_, record) => (
-        <Button size="small" onClick={() => openEditModal(record)}>
-          编辑
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button size="small" onClick={() => openEditModal(record)}>
+            编辑
+          </Button>
+          <Popconfirm
+            title="删除身份"
+            description={record.userCount > 0 ? `该身份下有 ${record.userCount} 个用户，无法删除` : '确定要删除该身份吗？此操作不可撤销。'}
+            onConfirm={() => handleDeleteIdentity(record)}
+            okText="确定"
+            cancelText="取消"
+            okButtonProps={{ danger: true, loading: Boolean(deletingIdentities[record.id]), disabled: record.userCount > 0 }}
+          >
+            <Button
+              size="small"
+              danger
+              loading={Boolean(deletingIdentities[record.id])}
+              disabled={record.userCount > 0}
+            >
+              删除
+            </Button>
+          </Popconfirm>
+        </div>
       ),
     },
   ];
@@ -147,6 +185,8 @@ export const IdentityManagementPage: React.FC = () => {
             <div className="py-12 flex items-center justify-center">
               <Spin tip="正在加载身份..." />
             </div>
+          ) : identities.length === 0 ? (
+            <div className="py-12 text-center text-gray-500">暂无身份</div>
           ) : (
             <Table rowKey="id" dataSource={identities} columns={columns} pagination={false} />
           )}

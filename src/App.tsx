@@ -9,6 +9,7 @@ import { ForbiddenPage } from './pages/ForbiddenPage';
 import { LoginPage } from './pages/LoginPage';
 import { RegisterPage } from './pages/RegisterPage';
 import { AppShell } from './components/AppShell';
+import { AdminLayout } from './components/admin/AdminLayout';
 import { ProtectedRoute, PublicOnlyRoute, getDefaultAuthorizedPath } from './components/AuthRoutes';
 import { useAuthStore } from './store/authStore';
 import { USER_PERMISSIONS } from './constants/auth';
@@ -38,9 +39,11 @@ function App() {
             <Route path="/workflows" element={<WorkflowPage />} />
           </Route>
           <Route element={<ProtectedRoute requiredPermissions={[USER_PERMISSIONS.ADMIN_PANEL]} />}>
-            <Route path="/admin" element={<AdminPage />} />
-            <Route path="/admin/users" element={<UserManagementPage />} />
-            <Route path="/admin/identities" element={<IdentityManagementPage />} />
+            <Route element={<AdminLayout />}>
+              <Route path="/admin" element={<AdminPage />} />
+              <Route path="/admin/users" element={<UserManagementPage />} />
+              <Route path="/admin/identities" element={<IdentityManagementPage />} />
+            </Route>
             <Route path="/admin/user-permissions" element={<Navigate to="/admin/users" replace />} />
             <Route path="/user-permissions" element={<Navigate to="/admin/users" replace />} />
           </Route>

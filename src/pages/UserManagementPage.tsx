@@ -1,8 +1,8 @@
 import React from 'react';
-import { Alert, Button, Card, Form, Input, Layout, Modal, Select, Spin, Table, Tag, Typography, message } from 'antd';
+import { Alert, Button, Card, Form, Input, Layout, Modal, Select, Spin, Table, Tag, Typography, message, Popconfirm } from 'antd';
 import type { TableColumnsType } from 'antd';
 import axios from 'axios';
-import { createAdminUser, fetchAdminIdentities, fetchAdminUsers, updateAdminUserIdentities, updateAdminUserStatus, type AdminIdentityItem, type AdminUserItem } from '../api/auth';
+import { createAdminUser, deleteAdminUser, fetchAdminIdentities, fetchAdminUsers, updateAdminUserIdentities, updateAdminUserStatus, type AdminIdentityItem, type AdminUserItem } from '../api/auth';
 
 const { Content } = Layout;
 const { Title, Paragraph } = Typography;
@@ -25,6 +25,7 @@ export const UserManagementPage: React.FC = () => {
   const [identitySubmitting, setIdentitySubmitting] = React.useState(false);
   const [editingUser, setEditingUser] = React.useState<AdminUserItem | null>(null);
   const [statusUpdating, setStatusUpdating] = React.useState<Record<string, boolean>>({});
+  const [deletingUsers, setDeletingUsers] = React.useState<Record<string, boolean>>({});
   const [users, setUsers] = React.useState<AdminUserItem[]>([]);
   const [identities, setIdentities] = React.useState<AdminIdentityItem[]>([]);
   const [keyword, setKeyword] = React.useState('');
@@ -102,6 +103,23 @@ export const UserManagementPage: React.FC = () => {
     }
   };
 
+  const handleDeleteUser = async (user: AdminUserItem) => {
+    if (user.username.trim().toLowerCase() === 'admin') {
+      message.warning('admin 用户禁止被删除');
+      return;
+    }
+    setDeletingUsers((prev) => ({ ...prev, [user.id]: true }));
+    try {
+      await deleteAdminUser(user.id);
+      await loadUsers(page, pageSize, keyword, identityId, lastLoginFilter);
+      message.success('用户已删除');
+    } catch (error) {
+      message.error(toErrorMessage(error));
+    } finally {
+      setDeletingUsers((prev) => ({ ...prev, [user.id]: false }));
+    }
+  };
+
   const handleToggleDisabled = async (user: AdminUserItem) => {
     if (user.username.trim().toLowerCase() === 'admin' && !user.disabled) {
       message.warning('admin 用户禁止被禁用');
@@ -164,6 +182,15 @@ export const UserManagementPage: React.FC = () => {
       ),
     },
     {
+      title: '状态',
+      dataIndex: 'disabled',
+      key: 'disabled',
+      width: 100,
+      render: (disabled: boolean) => (
+        <Tag color={disabled ? 'error' : 'success'}>{disabled ? '禁用' : '正常'}</Tag>
+      ),
+    },
+    {
       title: '用户最后登录时间',
       dataIndex: 'lastLoginAt',
       key: 'lastLoginAt',
@@ -173,7 +200,7 @@ export const UserManagementPage: React.FC = () => {
     {
       title: '操作',
       key: 'actions',
-      width: 220,
+      width: 280,
       render: (_, record) => {
         const isAdminUser = record.username.trim().toLowerCase() === 'admin';
         return (
@@ -193,6 +220,24 @@ export const UserManagementPage: React.FC = () => {
             >
               {record.disabled ? '启用用户' : '禁用用户'}
             </Button>
+            <Popconfirm
+              title="删除用户"
+              description="确定要删除该用户吗？此操作不可撤销。"
+              onConfirm={() => handleDeleteUser(record)}
+              okText="确定"
+              cancelText="取消"
+              okButtonProps={{ danger: true, loading: Boolean(deletingUsers[record.id]) }}
+              disabled={isAdminUser}
+            >
+              <Button
+                size="small"
+                danger
+                disabled={isAdminUser}
+                loading={Boolean(deletingUsers[record.id])}
+              >
+                删除
+              </Button>
+            </Popconfirm>
           </div>
         );
       },
@@ -208,7 +253,7 @@ export const UserManagementPage: React.FC = () => {
             <Button type="primary" onClick={() => setCreating(true)}>新增用户</Button>
           </div>
           <Paragraph className="!mb-5 text-gray-600">
-            用户数据来自数据库，展示用户名、用户身份和最后登录时间。
+            用户数据来自数据库，展示用户名、用户身份、状态和最后登录时间。
           </Paragraph>
           <div className="mb-4 flex flex-wrap gap-3">
             <Input
@@ -253,6 +298,8 @@ export const UserManagementPage: React.FC = () => {
             <div className="py-12 flex items-center justify-center">
               <Spin tip="正在加载用户..." />
             </div>
+          ) : users.length === 0 ? (
+            <div className="py-12 text-center text-gray-500">暂无用户</div>
           ) : (
             <Table
               rowKey="id"
