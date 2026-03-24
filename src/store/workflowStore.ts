@@ -1,24 +1,9 @@
 import { create } from 'zustand'
+import type { HttpParam, ParamField, OutputField } from '../types/workflow'
+
+export type { HttpParam, ParamField, OutputField }
 
 const NODE_WIDTH = 80
-
-export interface HttpParam {
-  key: string
-  value: string
-}
-
-export interface ParamField {
-  name: string
-  type: 'params' | 'path' | 'body'
-  required: boolean
-  description?: string
-}
-
-export interface OutputField {
-  name: string
-  path: string
-  description?: string
-}
 
 export interface WorkflowEdge {
   id: string

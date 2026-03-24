@@ -85,11 +85,12 @@ export const useAdminStore = create<AdminState>((set, get) => ({
   usersLoading: false,
   usersError: null,
   fetchUsers: async (query?: AdminUserQuery) => {
+    const { usersPage, usersPageSize } = get();
     set({ usersLoading: true, usersError: null });
     try {
       const data = await fetchAdminUsers({
-        page: get().usersPage,
-        pageSize: get().usersPageSize,
+        page: usersPage,
+        pageSize: usersPageSize,
         ...query,
       });
       set({

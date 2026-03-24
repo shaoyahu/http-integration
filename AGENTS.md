@@ -29,17 +29,17 @@ dist/           - Build output (do not edit manually)
 
 ### Development
 ```bash
-npm run dev              # Starts both client (Vite) and server (nodemon) concurrently
-npm run dev:client       # Vite dev server only on port 62345
-npm run dev:server       # Express server with hot reload via nodemon
+pnpm dev              # Starts both client (Vite) and server (nodemon) concurrently
+pnpm dev:client       # Vite dev server only on port 62345
+pnpm dev:server       # Express server with hot reload via nodemon
 ```
 
 ### Production Build
 ```bash
-npm run build            # Builds client (Vite) and server (esbuild)
-npm run build:client     # Production client bundle with Vite
-npm run build:server     # Bundles server/index.js to dist/server.js
-npm run start            # Runs production server from dist/server.js
+pnpm build            # Builds client (Vite) and server (esbuild)
+pnpm build:client     # Production client bundle with Vite
+pnpm build:server     # Bundles server/index.js to dist/server.js
+pnpm start            # Runs production server from dist/server.js
 ```
 
 ### Testing
@@ -48,14 +48,14 @@ Tests use **Vitest** with React Testing Library. No dedicated test script exists
 
 ```bash
 # Run all tests
-npx vitest run
+pnpm vitest run
 
 # Run tests in watch mode
-npx vitest
+pnpm vitest
 
 # Run a single test file
-npx vitest run src/store/workflowStore.test.ts
-npx vitest run src/pages/WorkflowPage.test.tsx
+pnpm vitest run src/store/workflowStore.test.ts
+pnpm vitest run src/pages/WorkflowPage.test.tsx
 
 # Run tests with coverage
 npx vitest run --coverage
@@ -292,9 +292,9 @@ PRs should include:
 - Screenshots/GIFs for UI changes
 - Manual verification steps:
   ```bash
-  npm run dev
-  npm run build
-  npx vitest run
+  pnpm dev
+  pnpm build
+  pnpm vitest run
   ```
 
 ## Server-Side Notes

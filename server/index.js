@@ -3,6 +3,7 @@ import cors from 'cors';
 import http from 'http';
 import https from 'https';
 import crypto from 'crypto';
+import net from 'net';
 import { ObjectId } from 'mongodb';
 import 'dotenv/config';
 import { connectMongo, getDb, getMongoState, disconnectMongo } from './mongo.js';
@@ -12,8 +13,8 @@ const PORT = process.env.PORT || 4573;
 
 app.use(cors({ origin: true, credentials: true }));
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
 const healthHandler = (req, res) => {
   const mongoState = getMongoState();
@@ -211,12 +212,6 @@ const deriveRoleFromPermissions = (permissions, explicitRole) => {
 };
 
 const normalizeUserIdentity = (user = {}, options = {}) => {
-  if (typeof user.username === 'string' && user.username.trim().toLowerCase() === 'admin') {
-    return {
-      role: USER_ROLE.ADMIN,
-      permissions: [...ADMIN_ALL_PERMISSIONS],
-    };
-  }
   const basePermissions = normalizePermissions(user.permissions, options);
   const normalizedRole = deriveRoleFromPermissions(basePermissions, user.role);
   if (normalizedRole === USER_ROLE.ADMIN) {
@@ -305,15 +300,6 @@ const resolveUserAccessFromIdentity = async (db, user = {}, options = {}) => {
   const permissionsSet = new Set(
     identities.flatMap((identity) => normalizePermissionIds(identity.permissions, { fallbackToDefault: false }))
   );
-  if (typeof user.username === 'string' && user.username.trim().toLowerCase() === 'admin') {
-    identityIds = [BUILTIN_IDENTITY_ID.ADMIN];
-    identities = [{
-      id: BUILTIN_IDENTITY_ID.ADMIN,
-      name: '管理员',
-      permissions: [...ADMIN_ALL_PERMISSIONS],
-    }];
-    ADMIN_ALL_PERMISSIONS.forEach((permission) => permissionsSet.add(permission));
-  }
   const permissions = [...permissionsSet];
   const role = permissions.includes(USER_PERMISSION.ADMIN_PANEL) ? USER_ROLE.ADMIN : USER_ROLE.USER;
 
@@ -585,8 +571,7 @@ const requireAuth = async (req, res, next) => {
 };
 
 const requireAnyPermission = (...permissions) => (req, res, next) => {
-  const username = typeof req.auth?.user?.username === 'string' ? req.auth.user.username.trim().toLowerCase() : '';
-  if (req.auth?.user?.role === USER_ROLE.ADMIN || username === 'admin') {
+  if (req.auth?.user?.role === USER_ROLE.ADMIN) {
     return next();
   }
   const userPermissions = Array.isArray(req.auth?.user?.permissions) ? req.auth.user.permissions : [];
@@ -1090,8 +1075,11 @@ const listAdminUsersHandler = async (req, res) => {
         if (identityIds.length === 0) {
           identityIds = resolveIdentityByLegacyUser(user);
         }
+        // Ensure admin user always has ADMIN identity, but preserve other identities too
         if (typeof user.username === 'string' && user.username.trim().toLowerCase() === 'admin') {
-          identityIds = [BUILTIN_IDENTITY_ID.ADMIN];
+          if (!identityIds.includes(BUILTIN_IDENTITY_ID.ADMIN)) {
+            identityIds = [BUILTIN_IDENTITY_ID.ADMIN, ...identityIds];
+          }
         }
         const identityNames = identityIds
           .map((id) => identityMap.get(id)?.name)
@@ -1609,14 +1597,14 @@ app.put('/api/users/:userId', requireAuth, requireAnyPermission(USER_PERMISSION.
 
 app.all('/api/proxy', requireAuth, requireAnyPermission(USER_PERMISSION.REQUEST_MANAGEMENT, USER_PERMISSION.WORKFLOW_MANAGEMENT), async (req, res) => {
   const { url, method = 'GET', headers = {}, body = null, params = {} } = req.body;
-  
+
   if (!url) {
     return res.status(400).json({ error: 'URL is required' });
   }
 
   try {
     let targetUrl = url;
-    
+
     if (Object.keys(params).length > 0) {
       const urlObj = new URL(url);
       Object.entries(params).forEach(([key, value]) => {
@@ -1627,8 +1615,66 @@ app.all('/api/proxy', requireAuth, requireAnyPermission(USER_PERMISSION.REQUEST_
       targetUrl = urlObj.toString();
     }
 
+    // SSRF protection: validate URL before making request
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(targetUrl);
+    } catch (e) {
+      return res.status(400).json({ error: 'Invalid URL format' });
+    }
+
+    const hostname = parsedUrl.hostname;
+
+    // Check for localhost and similar patterns
+    if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '0.0.0.0' || hostname === '::1') {
+      return res.status(400).json({ error: 'Access to localhost is not allowed' });
+    }
+
+    // Resolve hostname to IP and check for private/internal IPs
+    const isPrivateIP = (ip) => {
+      if (net.isIP(ip)) {
+        const ipNum = net.isIP(ip);
+        // 10.x.x.x
+        if (ipNum === 4 && ip.startsWith('10.')) return true;
+        // 172.16-31.x.x
+        if (ipNum === 4 && ip.startsWith('172.')) {
+          const second = parseInt(ip.split('.')[1], 10);
+          if (second >= 16 && second <= 31) return true;
+        }
+        // 192.168.x.x
+        if (ipNum === 4 && ip.startsWith('192.168.')) return true;
+        // 0.0.0.0
+        if (ip === '0.0.0.0') return true;
+        // IPv6 loopback and link-local
+        if (ip === '::1' || ip === 'fe80::') return true;
+      }
+      return false;
+    };
+
+    // DNS rebinding protection: resolve hostname to IP and validate
+    try {
+      const dns = await new Promise((resolve, reject) => {
+        require('dns').lookup(hostname, { all: true }, (err, address) => {
+          if (err) reject(err);
+          else resolve(address);
+        });
+      });
+
+      const addresses = Array.isArray(dns) ? dns : [dns];
+      for (const addr of addresses) {
+        const ip = typeof addr === 'string' ? addr : addr.address;
+        if (isPrivateIP(ip)) {
+          return res.status(400).json({ error: 'Access to private/internal IPs is not allowed' });
+        }
+      }
+    } catch (dnsErr) {
+      // If DNS resolution fails, allow the request to proceed (may be external)
+    }
+
     const lib = targetUrl.startsWith('https') ? https : http;
-    
+    const PROXY_TIMEOUT_MS = 30000;
+    const MAX_RESPONSE_SIZE = 50 * 1024 * 1024; // 50MB
+
     const options = {
       method,
       headers: {
@@ -1644,7 +1690,17 @@ app.all('/api/proxy', requireAuth, requireAnyPermission(USER_PERMISSION.REQUEST_
 
     const proxyReq = lib.request(targetUrl, options, (proxyRes) => {
       const chunks = [];
-      proxyRes.on('data', (chunk) => chunks.push(chunk));
+      let totalSize = 0;
+
+      proxyRes.on('data', (chunk) => {
+        totalSize += chunk.length;
+        if (totalSize > MAX_RESPONSE_SIZE) {
+          proxyReq.destroy();
+          return res.status(413).json({ error: 'Response too large', details: `Maximum size exceeded: ${MAX_RESPONSE_SIZE} bytes` });
+        }
+        chunks.push(chunk);
+      });
+
       proxyRes.on('end', () => {
         const buffer = Buffer.concat(chunks);
         const rawText = buffer.toString('utf8');
@@ -1662,7 +1718,17 @@ app.all('/api/proxy', requireAuth, requireAnyPermission(USER_PERMISSION.REQUEST_
       });
     }).on('error', (err) => {
       console.error('Proxy Error:', err);
-      res.status(500).json({ error: 'Proxy request failed', details: err.message });
+      if (err.code === 'ECONNRESET' || err.code === 'ETIMEDOUT') {
+        res.status(504).json({ error: 'Proxy request timeout' });
+      } else {
+        res.status(500).json({ error: 'Proxy request failed', details: err.message });
+      }
+    });
+
+    // Set timeout
+    proxyReq.setTimeout(PROXY_TIMEOUT_MS, () => {
+      proxyReq.destroy();
+      res.status(504).json({ error: 'Proxy request timeout', details: `Request exceeded ${PROXY_TIMEOUT_MS / 1000} seconds` });
     });
 
     if (body) {

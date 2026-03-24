@@ -1,29 +1,7 @@
 import { create } from 'zustand'
+import type { HttpParam, ParamField, OutputField, ApiMapping } from '../types/workflow'
 
-export interface HttpParam {
-  key: string
-  value: string
-}
-
-export interface ParamField {
-  name: string
-  type: 'params' | 'path' | 'body'
-  required: boolean
-  value?: string
-  description?: string
-}
-
-export interface OutputField {
-  name: string
-  path: string
-  description?: string
-}
-
-export interface ApiMapping {
-  inputName: string
-  target: 'path' | 'params' | 'body'
-  key: string
-}
+export type { HttpParam, ParamField, OutputField, ApiMapping }
 
 export interface RequestFolder {
   id: string

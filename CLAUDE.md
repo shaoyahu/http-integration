@@ -52,15 +52,15 @@ Routes guarded by `ProtectedRoute` component with `requiredPermissions`. Use `is
 ## Commands
 
 ```bash
-npm run dev          # Start both Vite (port 62345) and Express (nodemon)
-npm run dev:client   # Vite only
-npm run dev:server   # Express with hot reload
-npm run build        # Vite build + esbuild server
-npm start            # Run production server from dist/server.js
-npx vitest run       # Run all tests
-npx vitest run src/store/workflowStore.test.ts  # Single test file
-npx eslint src/      # Lint
-npx tsc --noEmit     # Type check
+pnpm dev          # Start both Vite (port 62345) and Express (nodemon)
+pnpm dev:client   # Vite only
+pnpm dev:server   # Express with hot reload
+pnpm build        # Vite build + esbuild server
+pnpm start        # Run production server from dist/server.js
+pnpm vitest run       # Run all tests
+pnpm vitest run src/store/workflowStore.test.ts  # Single test file
+pnpm eslint src/      # Lint
+pnpm tsc --noEmit     # Type check
 ```
 
 ## Server API Routes

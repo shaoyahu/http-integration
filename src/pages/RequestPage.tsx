@@ -45,12 +45,16 @@ export const RequestPage: React.FC = () => {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
 
-  const persistRequestState = useCallback(
-    async (payload: {
+  const persistRequestStateRef = useRef<
+    (payload: {
       requests: ReturnType<typeof useRequestStore.getState>['requests'];
       folders: ReturnType<typeof useRequestStore.getState>['folders'];
       selectedRequestId: string | null
-    }) => {
+    }) => Promise<void>
+  >();
+
+  if (!persistRequestStateRef.current) {
+    persistRequestStateRef.current = async (payload) => {
       const serialized = JSON.stringify(payload);
       if (serialized === lastSavedRef.current) {
         return;
@@ -84,13 +88,14 @@ export const RequestPage: React.FC = () => {
           queuedPayloadRef.current = null;
           const latestSerialized = JSON.stringify(latestPayload);
           if (latestSerialized !== lastSavedRef.current) {
-            await persistRequestState(latestPayload);
+            await persistRequestStateRef.current?.(latestPayload);
           }
         }
       }
-    },
-    []
-  );
+    };
+  }
+
+  const persistRequestState = persistRequestStateRef.current;
 
   const persistRequestStateNow = useCallback(async () => {
     const snapshot = useRequestStore.getState();
