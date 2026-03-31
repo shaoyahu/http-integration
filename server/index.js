@@ -3,10 +3,11 @@ import cors from 'cors';
 import http from 'http';
 import https from 'https';
 import crypto from 'crypto';
-import net from 'net';
 import { ObjectId } from 'mongodb';
 import 'dotenv/config';
 import { connectMongo, getDb, getMongoState, disconnectMongo } from './mongo.js';
+import { getSafeSelectedWorkflowId, normalizeWorkflow, normalizeWorkflowState } from './workflowState.js';
+import { findBlockedResolvedAddress, isBlockedHostname } from './proxySecurity.js';
 
 const app = express();
 const PORT = process.env.PORT || 4573;
@@ -439,41 +440,6 @@ const normalizeRequestState = (payload = {}) => {
   };
 };
 
-const normalizeWorkflowRequest = (request = {}, index = 0) => ({
-  id: typeof request.id === 'string' && request.id.trim() ? request.id : `${Date.now()}-${index}`,
-  name: typeof request.name === 'string' ? request.name : `请求 ${index + 1}`,
-  method: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].includes(request.method) ? request.method : 'GET',
-  url: typeof request.url === 'string' ? request.url : '',
-  headers: Array.isArray(request.headers) ? request.headers : [],
-  params: Array.isArray(request.params) ? request.params : [],
-  body: typeof request.body === 'string' ? request.body : '',
-  inputFields: Array.isArray(request.inputFields) ? request.inputFields : [],
-  outputFields: Array.isArray(request.outputFields) ? request.outputFields : [],
-  inputValues: request.inputValues && typeof request.inputValues === 'object' ? request.inputValues : {},
-  apiMappings: Array.isArray(request.apiMappings) ? request.apiMappings : [],
-});
-
-const normalizeWorkflow = (workflow = {}, index = 0) => ({
-  id: typeof workflow.id === 'string' && workflow.id.trim() ? workflow.id : `${Date.now()}-${index}`,
-  name: typeof workflow.name === 'string' ? workflow.name : `工作流 ${index + 1}`,
-  requests: Array.isArray(workflow.requests) ? workflow.requests.map((request, reqIdx) => normalizeWorkflowRequest(request, reqIdx)) : [],
-  createdAt: typeof workflow.createdAt === 'number' ? workflow.createdAt : Date.now(),
-  updatedAt: typeof workflow.updatedAt === 'number' ? workflow.updatedAt : Date.now(),
-  nodePositions: workflow.nodePositions && typeof workflow.nodePositions === 'object' ? workflow.nodePositions : {},
-});
-
-const normalizeWorkflowState = (payload = {}) => {
-  const workflows = Array.isArray(payload.workflows) ? payload.workflows.map((workflow, index) => normalizeWorkflow(workflow, index)) : [];
-  const selectedWorkflowId = typeof payload.selectedWorkflowId === 'string' ? payload.selectedWorkflowId : null;
-  const safeSelectedWorkflowId = selectedWorkflowId && workflows.some((workflow) => workflow.id === selectedWorkflowId)
-    ? selectedWorkflowId
-    : (workflows[0]?.id || null);
-  return {
-    workflows,
-    selectedWorkflowId: safeSelectedWorkflowId,
-  };
-};
-
 const getUserStateDocId = (req) => String(req.auth.user.id);
 
 const getDbOrReconnect = async () => {
@@ -482,6 +448,37 @@ const getDbOrReconnect = async () => {
     return current;
   }
   return await connectMongo();
+};
+
+const loadWorkflowStateForUser = async (db, userDocId) => {
+  const existing = await db.collection(WORKFLOW_STATE_COLLECTION).findOne({ _id: userDocId });
+  return {
+    existing,
+    state: normalizeWorkflowState(existing || {}),
+  };
+};
+
+const persistWorkflowStateForUser = async (db, userDocId, workflows, selectedWorkflowId) => {
+  const safeSelectedWorkflowId = getSafeSelectedWorkflowId(workflows, selectedWorkflowId);
+  await db.collection(WORKFLOW_STATE_COLLECTION).updateOne(
+    { _id: userDocId },
+    {
+      $set: {
+        workflows,
+        selectedWorkflowId: safeSelectedWorkflowId,
+        updatedAt: new Date(),
+      },
+      $setOnInsert: {
+        createdAt: new Date(),
+      },
+    },
+    { upsert: true }
+  );
+
+  return {
+    workflows,
+    selectedWorkflowId: safeSelectedWorkflowId,
+  };
 };
 
 const mongoUnavailableResponse = () => {
@@ -975,6 +972,97 @@ app.get('/api/workflows-state', requireAuth, requireAnyPermission(USER_PERMISSIO
   }
 });
 
+app.patch('/api/workflows-state/selection', requireAuth, requireAnyPermission(USER_PERMISSION.WORKFLOW_MANAGEMENT), async (req, res) => {
+  const db = await getDbOrReconnect();
+  if (!db) {
+    return res.status(503).json(mongoUnavailableResponse());
+  }
+  try {
+    const userDocId = getUserStateDocId(req);
+    const { state } = await loadWorkflowStateForUser(db, userDocId);
+    const selectedWorkflowId = typeof req.body?.selectedWorkflowId === 'string' ? req.body.selectedWorkflowId : null;
+    const nextState = await persistWorkflowStateForUser(db, userDocId, state.workflows, selectedWorkflowId);
+    return res.json({ ok: true, selectedWorkflowId: nextState.selectedWorkflowId });
+  } catch (error) {
+    return res.status(500).json({
+      error: 'Failed to save workflow selection',
+      details: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+app.put('/api/workflows-state/:workflowId', requireAuth, requireAnyPermission(USER_PERMISSION.WORKFLOW_MANAGEMENT), async (req, res) => {
+  const db = await getDbOrReconnect();
+  if (!db) {
+    return res.status(503).json(mongoUnavailableResponse());
+  }
+  try {
+    const workflowId = typeof req.params.workflowId === 'string' ? req.params.workflowId.trim() : '';
+    if (!workflowId) {
+      return res.status(400).json({ error: 'workflowId is required', code: 'WORKFLOW_ID_REQUIRED' });
+    }
+
+    const incomingWorkflow = req.body?.workflow;
+    if (!incomingWorkflow || typeof incomingWorkflow !== 'object') {
+      return res.status(400).json({ error: 'workflow is required', code: 'WORKFLOW_REQUIRED' });
+    }
+
+    const userDocId = getUserStateDocId(req);
+    const { state } = await loadWorkflowStateForUser(db, userDocId);
+    const existingWorkflow = state.workflows.find((workflow) => workflow.id === workflowId);
+    const normalizedWorkflow = normalizeWorkflow(
+      {
+        ...incomingWorkflow,
+        id: workflowId,
+        createdAt: existingWorkflow?.createdAt,
+      },
+      state.workflows.length
+    );
+
+    const nextWorkflows = existingWorkflow
+      ? state.workflows.map((workflow) => (workflow.id === workflowId ? normalizedWorkflow : workflow))
+      : [...state.workflows, normalizedWorkflow];
+
+    const selectedWorkflowId = typeof req.body?.selectedWorkflowId === 'string'
+      ? req.body.selectedWorkflowId
+      : state.selectedWorkflowId;
+    const nextState = await persistWorkflowStateForUser(db, userDocId, nextWorkflows, selectedWorkflowId);
+    return res.json({ ok: true, workflowId, count: nextState.workflows.length });
+  } catch (error) {
+    return res.status(500).json({
+      error: 'Failed to save workflow item',
+      details: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+app.delete('/api/workflows-state/:workflowId', requireAuth, requireAnyPermission(USER_PERMISSION.WORKFLOW_MANAGEMENT), async (req, res) => {
+  const db = await getDbOrReconnect();
+  if (!db) {
+    return res.status(503).json(mongoUnavailableResponse());
+  }
+  try {
+    const workflowId = typeof req.params.workflowId === 'string' ? req.params.workflowId.trim() : '';
+    if (!workflowId) {
+      return res.status(400).json({ error: 'workflowId is required', code: 'WORKFLOW_ID_REQUIRED' });
+    }
+
+    const userDocId = getUserStateDocId(req);
+    const { state } = await loadWorkflowStateForUser(db, userDocId);
+    const nextWorkflows = state.workflows.filter((workflow) => workflow.id !== workflowId);
+    const selectedWorkflowId = typeof req.body?.selectedWorkflowId === 'string'
+      ? req.body.selectedWorkflowId
+      : state.selectedWorkflowId;
+    const nextState = await persistWorkflowStateForUser(db, userDocId, nextWorkflows, selectedWorkflowId);
+    return res.json({ ok: true, workflowId, count: nextState.workflows.length });
+  } catch (error) {
+    return res.status(500).json({
+      error: 'Failed to delete workflow item',
+      details: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
 app.put('/api/workflows-state', requireAuth, requireAnyPermission(USER_PERMISSION.WORKFLOW_MANAGEMENT), async (req, res) => {
   const db = await getDbOrReconnect();
   if (!db) {
@@ -983,19 +1071,7 @@ app.put('/api/workflows-state', requireAuth, requireAnyPermission(USER_PERMISSIO
   try {
     const normalized = normalizeWorkflowState(req.body || {});
     const userDocId = getUserStateDocId(req);
-    await db.collection(WORKFLOW_STATE_COLLECTION).updateOne(
-      { _id: userDocId },
-      {
-        $set: {
-          ...normalized,
-          updatedAt: new Date(),
-        },
-        $setOnInsert: {
-          createdAt: new Date(),
-        },
-      },
-      { upsert: true }
-    );
+    await persistWorkflowStateForUser(db, userDocId, normalized.workflows, normalized.selectedWorkflowId);
     return res.json({ ok: true, count: normalized.workflows.length });
   } catch (error) {
     return res.status(500).json({
@@ -1625,50 +1701,21 @@ app.all('/api/proxy', requireAuth, requireAnyPermission(USER_PERMISSION.REQUEST_
 
     const hostname = parsedUrl.hostname;
 
-    // Check for localhost and similar patterns
-    if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '0.0.0.0' || hostname === '::1') {
+    if (isBlockedHostname(hostname)) {
       return res.status(400).json({ error: 'Access to localhost is not allowed' });
     }
 
-    // Resolve hostname to IP and check for private/internal IPs
-    const isPrivateIP = (ip) => {
-      if (net.isIP(ip)) {
-        const ipNum = net.isIP(ip);
-        // 10.x.x.x
-        if (ipNum === 4 && ip.startsWith('10.')) return true;
-        // 172.16-31.x.x
-        if (ipNum === 4 && ip.startsWith('172.')) {
-          const second = parseInt(ip.split('.')[1], 10);
-          if (second >= 16 && second <= 31) return true;
-        }
-        // 192.168.x.x
-        if (ipNum === 4 && ip.startsWith('192.168.')) return true;
-        // 0.0.0.0
-        if (ip === '0.0.0.0') return true;
-        // IPv6 loopback and link-local
-        if (ip === '::1' || ip === 'fe80::') return true;
-      }
-      return false;
-    };
-
-    // DNS rebinding protection: resolve hostname to IP and validate
     try {
-      const dns = await new Promise((resolve, reject) => {
-        require('dns').lookup(hostname, { all: true }, (err, address) => {
-          if (err) reject(err);
-          else resolve(address);
-        });
-      });
-
-      const addresses = Array.isArray(dns) ? dns : [dns];
-      for (const addr of addresses) {
-        const ip = typeof addr === 'string' ? addr : addr.address;
-        if (isPrivateIP(ip)) {
-          return res.status(400).json({ error: 'Access to private/internal IPs is not allowed' });
-        }
+      const blockedAddress = await findBlockedResolvedAddress(hostname);
+      if (blockedAddress) {
+        return res.status(400).json({ error: 'Access to private/internal IPs is not allowed' });
       }
-    } catch (dnsErr) {
-      // If DNS resolution fails, allow the request to proceed (may be external)
+    } catch (dnsError) {
+      if (dnsError instanceof Error) {
+        console.warn(`[proxy] DNS lookup skipped for ${hostname}: ${dnsError.message}`);
+      } else {
+        console.warn(`[proxy] DNS lookup skipped for ${hostname}: ${String(dnsError)}`);
+      }
     }
 
     const lib = targetUrl.startsWith('https') ? https : http;

@@ -1,11 +1,23 @@
 import React, { useCallback, useState } from 'react';
 import { Layout, Button, Space, message, Empty, Drawer } from 'antd';
-import { PlayCircleOutlined, MenuUnfoldOutlined, LeftOutlined, RightOutlined } from '@ant-design/icons';
+import { PlayCircleOutlined, MenuUnfoldOutlined, LeftOutlined, RightOutlined, DeleteOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import { useWorkflowStore } from '../store/workflowStore';
+import type { Workflow } from '../store/workflowStore';
 import Editor from '@monaco-editor/react';
 import { applyPathMapping, parseBodyValue, setNestedValue } from '../utils/requestPayload';
-import { fetchWorkflowAvailableRequests, fetchWorkflowState, healthCheck, proxyRequest, saveWorkflowState, type WorkflowAvailableRequest } from '../api/http';
+import {
+  deleteWorkflowItem,
+  fetchWorkflowAvailableRequests,
+  fetchWorkflowState,
+  healthCheck,
+  proxyRequest,
+  saveWorkflowItem,
+  saveWorkflowSelection,
+  saveWorkflowState,
+  type WorkflowAvailableRequest,
+  type WorkflowStatePayload,
+} from '../api/http';
 import { formatResponseData } from '../utils/response';
 import {
   WorkflowSidebar,
@@ -68,6 +80,66 @@ const buildCurl = (url: string, method: string, params: Record<string, string>, 
   return parts.join(' ');
 };
 
+type WorkflowPersistRequest =
+  | { type: 'full'; snapshot: WorkflowStatePayload }
+  | { type: 'workflow'; snapshot: WorkflowStatePayload; workflow: Workflow }
+  | { type: 'delete'; snapshot: WorkflowStatePayload; workflowId: string }
+  | { type: 'selection'; snapshot: WorkflowStatePayload };
+
+const buildWorkflowSnapshot = (state: { workflows: Workflow[]; selectedWorkflowId: string | null }): WorkflowStatePayload => ({
+  workflows: state.workflows,
+  selectedWorkflowId: state.selectedWorkflowId,
+});
+
+const serializeWorkflowSnapshot = (snapshot: WorkflowStatePayload) => JSON.stringify(snapshot);
+
+const buildWorkflowPersistRequest = (
+  previous: WorkflowStatePayload,
+  next: WorkflowStatePayload
+): WorkflowPersistRequest | null => {
+  if (serializeWorkflowSnapshot(previous) === serializeWorkflowSnapshot(next)) {
+    return null;
+  }
+
+  const prevIds = previous.workflows.map((workflow) => workflow.id);
+  const nextIds = next.workflows.map((workflow) => workflow.id);
+  const addedIds = nextIds.filter((id) => !prevIds.includes(id));
+  const removedIds = prevIds.filter((id) => !nextIds.includes(id));
+  const prevWorkflowMap = new Map(previous.workflows.map((workflow) => [workflow.id, workflow]));
+  const nextWorkflowMap = new Map(next.workflows.map((workflow) => [workflow.id, workflow]));
+  const changedCommonIds = nextIds.filter((id) => prevWorkflowMap.has(id)).filter((id) => {
+    const previousWorkflow = prevWorkflowMap.get(id);
+    const nextWorkflow = nextWorkflowMap.get(id);
+    return JSON.stringify(previousWorkflow) !== JSON.stringify(nextWorkflow);
+  });
+
+  if (addedIds.length === 0 && removedIds.length === 0) {
+    if (changedCommonIds.length === 0 && previous.selectedWorkflowId !== next.selectedWorkflowId) {
+      return { type: 'selection', snapshot: next };
+    }
+    if (changedCommonIds.length === 1) {
+      const workflow = nextWorkflowMap.get(changedCommonIds[0]);
+      if (workflow) {
+        return { type: 'workflow', snapshot: next, workflow };
+      }
+    }
+    return { type: 'full', snapshot: next };
+  }
+
+  if (addedIds.length === 1 && removedIds.length === 0 && changedCommonIds.length === 0) {
+    const workflow = nextWorkflowMap.get(addedIds[0]);
+    if (workflow) {
+      return { type: 'workflow', snapshot: next, workflow };
+    }
+  }
+
+  if (removedIds.length === 1 && addedIds.length === 0 && changedCommonIds.length === 0) {
+    return { type: 'delete', snapshot: next, workflowId: removedIds[0] };
+  }
+
+  return { type: 'full', snapshot: next };
+};
+
 export const WorkflowPage: React.FC = () => {
   const {
     workflows,
@@ -78,6 +150,7 @@ export const WorkflowPage: React.FC = () => {
     deleteWorkflow,
     setSelectedWorkflow,
     removeRequestFromWorkflow,
+    removeEdge,
     updateWorkflowRequestInputValue,
     addEdge,
   } = useWorkflowStore();
@@ -96,12 +169,12 @@ export const WorkflowPage: React.FC = () => {
   const nodePositionsRef = React.useRef<Record<string, { x: number; y: number }>>({});
   const [view, setView] = useState<{ scale: number; offsetX: number; offsetY: number }>({ scale: 1, offsetX: 0, offsetY: 0 });
   const [canvasSize, setCanvasSize] = useState<{ width: number; height: number }>({ width: MIN_CANVAS_WIDTH, height: MIN_CANVAS_HEIGHT });
+  const canvasSizeRef = React.useRef(canvasSize);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [addPanelOpen, setAddPanelOpen] = useState(false);
-  const [addSearch, setAddSearch] = useState('');
   const [addPanelPos, setAddPanelPos] = useState<{ x: number; y: number; afterRequestId: string | null }>({ x: 0, y: 0, afterRequestId: null });
   const [spaceDown, setSpaceDown] = useState(false);
-  const [nodeSearch, setNodeSearch] = useState('');
   const [workflowSiderCollapsed, setWorkflowSiderCollapsed] = useState(false);
   const [isLoadingState, setIsLoadingState] = useState(true);
   const [isSavingState, setIsSavingState] = useState(false);
@@ -125,15 +198,15 @@ export const WorkflowPage: React.FC = () => {
   }>({ id: null, startX: 0, startY: 0, offsetX: 0, offsetY: 0, moved: false, mode: null, originOffsetX: 0, originOffsetY: 0 });
   const spaceDownRef = React.useRef(false);
   const initializedRef = React.useRef(false);
-  const lastSavedRef = React.useRef('');
+  const lastSavedSerializedRef = React.useRef('');
+  const lastSavedSnapshotRef = React.useRef<WorkflowStatePayload>({ workflows: [], selectedWorkflowId: null });
   const saveTimerRef = React.useRef<number | null>(null);
   const latestSaveRequestIdRef = React.useRef(0);
   const saveInFlightRef = React.useRef(false);
-  const queuedPayloadRef = React.useRef<{ workflows: typeof workflows; selectedWorkflowId: string | null } | null>(null);
+  const queuedPersistRef = React.useRef<WorkflowPersistRequest | null>(null);
 
   const selectedWorkflow = workflows.find((wf) => wf.id === selectedWorkflowId);
   const lastUpdated = selectedWorkflow?.updatedAt || selectedWorkflow?.createdAt;
-  const filteredAvailableRequests = availableRequests.filter((req) => (req.name || '').toLowerCase().includes(addSearch.toLowerCase()));
   const triggerPos = React.useMemo(
     () => ({ x: canvasSize.width / 2 - TRIGGER_WIDTH / 2, y: 12 }),
     [canvasSize]
@@ -148,13 +221,13 @@ export const WorkflowPage: React.FC = () => {
     : (isDatabaseConnected ? 'success' : 'error');
 
   const persistWorkflowState = useCallback(
-    async (payload: { workflows: typeof workflows; selectedWorkflowId: string | null }) => {
-      const serialized = JSON.stringify(payload);
-      if (serialized === lastSavedRef.current) {
+    async (request: WorkflowPersistRequest) => {
+      const serialized = serializeWorkflowSnapshot(request.snapshot);
+      if (serialized === lastSavedSerializedRef.current) {
         return;
       }
       if (saveInFlightRef.current) {
-        queuedPayloadRef.current = payload;
+        queuedPersistRef.current = request;
         return;
       }
 
@@ -165,8 +238,20 @@ export const WorkflowPage: React.FC = () => {
       setSaveError(null);
 
       try {
-        await saveWorkflowState(payload);
-        lastSavedRef.current = serialized;
+        if (request.type === 'workflow') {
+          await saveWorkflowItem({
+            workflow: request.workflow,
+            selectedWorkflowId: request.snapshot.selectedWorkflowId,
+          });
+        } else if (request.type === 'delete') {
+          await deleteWorkflowItem(request.workflowId, request.snapshot.selectedWorkflowId);
+        } else if (request.type === 'selection') {
+          await saveWorkflowSelection(request.snapshot.selectedWorkflowId);
+        } else {
+          await saveWorkflowState(request.snapshot);
+        }
+        lastSavedSerializedRef.current = serialized;
+        lastSavedSnapshotRef.current = request.snapshot;
         setLastSavedAt(Date.now());
       } catch (error) {
         const details = getErrorMessage(error);
@@ -177,18 +262,22 @@ export const WorkflowPage: React.FC = () => {
         if (latestSaveRequestIdRef.current === requestId) {
           setIsSavingState(false);
         }
-        if (queuedPayloadRef.current) {
-          const latestPayload = queuedPayloadRef.current;
-          queuedPayloadRef.current = null;
-          const latestSerialized = JSON.stringify(latestPayload);
-          if (latestSerialized !== lastSavedRef.current) {
-            await persistWorkflowState(latestPayload);
+        if (queuedPersistRef.current) {
+          const latestRequest = queuedPersistRef.current;
+          queuedPersistRef.current = null;
+          const latestSerialized = serializeWorkflowSnapshot(latestRequest.snapshot);
+          if (latestSerialized !== lastSavedSerializedRef.current) {
+            await persistWorkflowState(latestRequest);
           }
         }
       }
     },
     []
   );
+
+  React.useEffect(() => {
+    canvasSizeRef.current = canvasSize;
+  }, [canvasSize]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -213,11 +302,9 @@ export const WorkflowPage: React.FC = () => {
         if (cancelled) {
           return;
         }
-        const snapshot = useWorkflowStore.getState();
-        lastSavedRef.current = JSON.stringify({
-          workflows: snapshot.workflows,
-          selectedWorkflowId: snapshot.selectedWorkflowId,
-        });
+        const snapshot = buildWorkflowSnapshot(useWorkflowStore.getState());
+        lastSavedSnapshotRef.current = snapshot;
+        lastSavedSerializedRef.current = serializeWorkflowSnapshot(snapshot);
         initializedRef.current = true;
         setIsLoadingState(false);
       }
@@ -237,12 +324,13 @@ export const WorkflowPage: React.FC = () => {
         window.clearTimeout(saveTimerRef.current);
       }
       saveTimerRef.current = window.setTimeout(async () => {
-        const payload = {
-          workflows: state.workflows,
-          selectedWorkflowId: state.selectedWorkflowId,
-        };
+        const snapshot = buildWorkflowSnapshot(state);
+        const request = buildWorkflowPersistRequest(lastSavedSnapshotRef.current, snapshot);
+        if (!request) {
+          return;
+        }
         try {
-          await persistWorkflowState(payload);
+          await persistWorkflowState(request);
         } catch (error) {
           const details = getErrorMessage(error);
           console.error('Failed to save workflows state to DB:', details);
@@ -358,7 +446,6 @@ export const WorkflowPage: React.FC = () => {
 
   React.useEffect(() => {
     setAddPanelOpen(false);
-    setAddSearch('');
     setSelectedNodeId(null);
     setView({ scale: 1, offsetX: 0, offsetY: 0 });
   }, [selectedWorkflowId]);
@@ -369,6 +456,13 @@ export const WorkflowPage: React.FC = () => {
       setSelectedNodeId(null);
     }
   }, [selectedWorkflow, selectedNodeId]);
+
+  React.useEffect(() => {
+    if (!selectedWorkflow || !selectedEdgeId) return;
+    if (!(selectedWorkflow.edges || []).find((edge) => edge.id === selectedEdgeId)) {
+      setSelectedEdgeId(null);
+    }
+  }, [selectedWorkflow, selectedEdgeId]);
 
   React.useEffect(() => {
     const handleDocClick = (event: MouseEvent) => {
@@ -635,6 +729,105 @@ export const WorkflowPage: React.FC = () => {
     return null;
   };
 
+  type Point = { x: number; y: number };
+
+  const getEdgePoints = (edge: { sourceId: string; targetId: string }): { start: Point; end: Point } | null => {
+    let start: Point | null = null;
+    let end: Point | null = null;
+
+    if (edge.sourceId === 'trigger') {
+      start = { x: triggerPos.x + TRIGGER_WIDTH / 2, y: triggerPos.y + TRIGGER_HEIGHT };
+    } else {
+      const sourceNodePos = nodePositionsRef.current[edge.sourceId];
+      if (sourceNodePos) {
+        start = { x: sourceNodePos.x + NODE_WIDTH / 2, y: sourceNodePos.y + NODE_HEIGHT };
+      }
+    }
+
+    const targetNodePos = nodePositionsRef.current[edge.targetId];
+    if (targetNodePos) {
+      end = { x: targetNodePos.x + NODE_WIDTH / 2, y: targetNodePos.y };
+    }
+
+    if (!start || !end) {
+      return null;
+    }
+
+    return { start, end };
+  };
+
+  const getEdgeCurvePoints = (start: Point, end: Point) => {
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    const curvature = Math.min(Math.max(distance * 0.5, 30), 100);
+
+    return {
+      cp1: { x: start.x, y: start.y + curvature },
+      cp2: { x: end.x, y: end.y - curvature },
+    };
+  };
+
+  const getBezierPoint = (start: Point, cp1: Point, cp2: Point, end: Point, t: number): Point => {
+    const oneMinusT = 1 - t;
+    return {
+      x: oneMinusT ** 3 * start.x
+        + 3 * oneMinusT ** 2 * t * cp1.x
+        + 3 * oneMinusT * t ** 2 * cp2.x
+        + t ** 3 * end.x,
+      y: oneMinusT ** 3 * start.y
+        + 3 * oneMinusT ** 2 * t * cp1.y
+        + 3 * oneMinusT * t ** 2 * cp2.y
+        + t ** 3 * end.y,
+    };
+  };
+
+  const getDistanceToSegment = (point: Point, start: Point, end: Point) => {
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    if (dx === 0 && dy === 0) {
+      return Math.sqrt((point.x - start.x) ** 2 + (point.y - start.y) ** 2);
+    }
+
+    const t = Math.max(
+      0,
+      Math.min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / (dx * dx + dy * dy))
+    );
+    const projectionX = start.x + t * dx;
+    const projectionY = start.y + t * dy;
+
+    return Math.sqrt((point.x - projectionX) ** 2 + (point.y - projectionY) ** 2);
+  };
+
+  const hitTestEdge = (x: number, y: number): string | null => {
+    if (!selectedWorkflow) return null;
+
+    let closestEdgeId: string | null = null;
+    let closestDistance = Number.POSITIVE_INFINITY;
+    const threshold = 10 / view.scale;
+
+    for (const edge of selectedWorkflow.edges || []) {
+      const points = getEdgePoints(edge);
+      if (!points) continue;
+
+      const { start, end } = points;
+      const { cp1, cp2 } = getEdgeCurvePoints(start, end);
+      let previous = start;
+
+      for (let step = 1; step <= 24; step += 1) {
+        const current = getBezierPoint(start, cp1, cp2, end, step / 24);
+        const distance = getDistanceToSegment({ x, y }, previous, current);
+        if (distance < closestDistance) {
+          closestDistance = distance;
+          closestEdgeId = edge.id;
+        }
+        previous = current;
+      }
+    }
+
+    return closestDistance <= threshold ? closestEdgeId : null;
+  };
+
   const hitTestConnectorPoint = (x: number, y: number): { nodeId: string; pointType: 'input' | 'output' } | null => {
     if (!selectedWorkflow) return null;
 
@@ -650,18 +843,21 @@ export const WorkflowPage: React.FC = () => {
     for (const req of selectedWorkflow.requests) {
       const pos = nodePositionsRef.current[req.id];
       if (!pos) continue;
+      const shouldShowInputConnector = Boolean(connectingFrom) && connectingFrom?.nodeId !== req.id;
+      const shouldShowOutputConnector = hoveredNodeId === req.id || connectingFrom?.nodeId === req.id;
+      if (!shouldShowInputConnector && !shouldShowOutputConnector) continue;
 
       const inputX = pos.x + NODE_SIZE / 2;
       const inputY = pos.y;
       const inputDist = Math.sqrt((x - inputX) ** 2 + (y - inputY) ** 2);
-      if (inputDist <= 12) {
+      if (shouldShowInputConnector && inputDist <= 12) {
         return { nodeId: req.id, pointType: 'input' };
       }
 
       const outputX = pos.x + NODE_SIZE / 2;
       const outputY = pos.y + NODE_HEIGHT;
       const outputDist = Math.sqrt((x - outputX) ** 2 + (y - outputY) ** 2);
-      if (outputDist <= 12) {
+      if (shouldShowOutputConnector && outputDist <= 12) {
         return { nodeId: req.id, pointType: 'output' };
       }
     }
@@ -755,7 +951,6 @@ export const WorkflowPage: React.FC = () => {
       message.success('请求已添加');
     }
     setAddPanelOpen(false);
-    setAddSearch('');
   };
 
   const handleCanvasMouseDown = (event: React.MouseEvent<HTMLCanvasElement>) => {
@@ -780,6 +975,7 @@ export const WorkflowPage: React.FC = () => {
     // Check for connector point interaction
     const connectorPoint = hitTestConnectorPoint(x, y);
     if (connectorPoint && connectorPoint.pointType === 'output') {
+      setSelectedEdgeId(null);
       setConnectingFrom({ nodeId: connectorPoint.nodeId, pointType: 'output' });
       setMousePos({ x, y });
       return;
@@ -800,19 +996,29 @@ export const WorkflowPage: React.FC = () => {
         if (toolbarAction === 'delete') {
           removeRequestFromWorkflow(selectedWorkflow.id, selectedNodeId);
           setSelectedNodeId(null);
+          setSelectedEdgeId(null);
           message.success('节点已删除');
           return;
         }
       }
     }
 
+    const edgeId = hitTestEdge(x, y);
+    if (edgeId) {
+      setSelectedNodeId(null);
+      setSelectedEdgeId(edgeId);
+      return;
+    }
+
     const node = hitTestNode(x, y);
     if (!node) {
+      setSelectedEdgeId(null);
       startPan();
       return;
     }
     const pos = nodePositions[node.id];
     if (!pos) return;
+    setSelectedEdgeId(null);
     dragRef.current.id = node.id;
     dragRef.current.startX = x;
     dragRef.current.startY = y;
@@ -905,6 +1111,7 @@ export const WorkflowPage: React.FC = () => {
     if (dragId) {
       if (!moved) {
         setSelectedNodeId(dragId);
+        setSelectedEdgeId(null);
       } else {
         const current = nodePositionsRef.current[dragId];
         if (current) {
@@ -916,40 +1123,37 @@ export const WorkflowPage: React.FC = () => {
     dragRef.current.mode = null;
   };
 
-  const handleCanvasWheel = (event: React.WheelEvent<HTMLCanvasElement>) => {
-    event.preventDefault();
-    const useZoom = event.metaKey || event.altKey;
-    if (useZoom) {
-      const rect = canvasRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      const sx = event.clientX - rect.left;
-      const sy = event.clientY - rect.top;
-      const worldX = sx / view.scale + view.offsetX;
-      const worldY = sy / view.scale + view.offsetY;
-      const nextScale = Math.min(2, Math.max(0.5, view.scale * (event.deltaY < 0 ? 1.1 : 0.9)));
-      const nextOffsetX = worldX - sx / nextScale;
-      const nextOffsetY = worldY - sy / nextScale;
-      const container = canvasContainerRef.current;
-      const viewWidth = container ? container.clientWidth / nextScale : canvasSize.width / nextScale;
-      const viewHeight = container ? container.clientHeight / nextScale : canvasSize.height / nextScale;
-      setView({
-        scale: nextScale,
-        offsetX: clampOffset(nextOffsetX, viewWidth, canvasSize.width),
-        offsetY: clampOffset(nextOffsetY, viewHeight, canvasSize.height),
-      });
-      return;
+  const selectedEdgeAction = React.useMemo(() => {
+    if (!selectedWorkflow || !selectedEdgeId) {
+      return null;
     }
-    const container = canvasContainerRef.current;
-    const viewWidth = container ? container.clientWidth / view.scale : canvasSize.width / view.scale;
-    const viewHeight = container ? container.clientHeight / view.scale : canvasSize.height / view.scale;
-    const nextOffsetX = view.offsetX + event.deltaX / view.scale;
-    const nextOffsetY = view.offsetY + event.deltaY / view.scale;
-    setView({
-      ...view,
-      offsetX: clampOffset(nextOffsetX, viewWidth, canvasSize.width),
-      offsetY: clampOffset(nextOffsetY, viewHeight, canvasSize.height),
-    });
-  };
+
+    const selectedEdge = (selectedWorkflow.edges || []).find((edge) => edge.id === selectedEdgeId);
+    if (!selectedEdge) {
+      return null;
+    }
+
+    const points = getEdgePoints(selectedEdge);
+    if (!points) {
+      return null;
+    }
+
+    const { cp1, cp2 } = getEdgeCurvePoints(points.start, points.end);
+    const midpoint = getBezierPoint(points.start, cp1, cp2, points.end, 0.5);
+    const screenX = (midpoint.x - view.offsetX) * view.scale;
+    const screenY = (midpoint.y - view.offsetY) * view.scale;
+    const isVisible = screenX >= 0 && screenX <= canvasSize.width && screenY >= 0 && screenY <= canvasSize.height;
+
+    if (!isVisible) {
+      return null;
+    }
+
+    return {
+      id: selectedEdge.id,
+      x: screenX,
+      y: screenY,
+    };
+  }, [selectedWorkflow, selectedEdgeId, nodePositions, triggerPos, view, canvasSize]);
 
   const handleImportOutputFields = (result: any) => {
     if (result.data && selectedWorkflowId) {
@@ -1031,25 +1235,25 @@ export const WorkflowPage: React.FC = () => {
       ctx.stroke();
     };
 
-    const drawCurveConnection = (start: Point, end: Point, color: string, scale: number) => {
-      const dx = end.x - start.x;
-      const dy = end.y - start.y;
-      const distance = Math.sqrt(dx * dx + dy * dy);
-      const curvature = Math.min(Math.max(distance * 0.5, 30), 100);
-      const cp1x = start.x;
-      const cp1y = start.y + curvature;
-      const cp2x = end.x;
-      const cp2y = end.y - curvature;
+    const drawCurveConnection = (
+      start: Point,
+      end: Point,
+      color: string,
+      scale: number,
+      lineWidth: number = 2,
+      dashed: boolean = true
+    ) => {
+      const { cp1, cp2 } = getEdgeCurvePoints(start, end);
       ctx.strokeStyle = color;
-      ctx.lineWidth = 2 / scale;
+      ctx.lineWidth = lineWidth / scale;
       ctx.lineCap = 'round';
+      ctx.setLineDash(dashed ? [6 / scale, 6 / scale] : []);
       ctx.beginPath();
       ctx.moveTo(start.x, start.y);
-      ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, end.x, end.y);
+      ctx.bezierCurveTo(cp1.x, cp1.y, cp2.x, cp2.y, end.x, end.y);
       ctx.stroke();
+      ctx.setLineDash([]);
     };
-
-    type Point = { x: number; y: number };
 
     drawRoundedRect(triggerPos.x, triggerPos.y, TRIGGER_WIDTH, TRIGGER_HEIGHT, 12);
     ctx.fillStyle = '#ffffff';
@@ -1069,25 +1273,17 @@ export const WorkflowPage: React.FC = () => {
     // Draw connections based on edges
     const edges = selectedWorkflow.edges || [];
     for (const edge of edges) {
-      let startPos: { x: number; y: number } | null = null;
-      let endPos: { x: number; y: number } | null = null;
-
-      if (edge.sourceId === 'trigger') {
-        startPos = { x: triggerPos.x + TRIGGER_WIDTH / 2, y: triggerPos.y + TRIGGER_HEIGHT };
-      } else {
-        const sourceNodePos = nodePositionsRef.current[edge.sourceId];
-        if (sourceNodePos) {
-          startPos = { x: sourceNodePos.x + NODE_WIDTH / 2, y: sourceNodePos.y + NODE_HEIGHT };
-        }
-      }
-
-      const targetNodePos = nodePositionsRef.current[edge.targetId];
-      if (targetNodePos) {
-        endPos = { x: targetNodePos.x + NODE_WIDTH / 2, y: targetNodePos.y };
-      }
-
-      if (startPos && endPos) {
-        drawCurveConnection(startPos, endPos, '#6b7280', view.scale);
+      const points = getEdgePoints(edge);
+      if (points) {
+        const isSelected = edge.id === selectedEdgeId;
+        drawCurveConnection(
+          points.start,
+          points.end,
+          isSelected ? '#2563eb' : '#6b7280',
+          view.scale,
+          isSelected ? 4 : 2,
+          !isSelected
+        );
       }
     }
 
@@ -1107,7 +1303,7 @@ export const WorkflowPage: React.FC = () => {
       if (startPos) {
         ctx.strokeStyle = '#60a5fa';
         ctx.lineWidth = 2 / view.scale;
-        ctx.setLineDash([5, 5]);
+        ctx.setLineDash([6 / view.scale, 6 / view.scale]);
         ctx.beginPath();
         ctx.moveTo(startPos.x, startPos.y);
         ctx.lineTo(mousePos.x, mousePos.y);
@@ -1173,28 +1369,33 @@ export const WorkflowPage: React.FC = () => {
 
       // Draw input connector point (top)
       const isNodeHovered = hoveredNodeId === req.id;
+      const shouldShowInputConnector = Boolean(connectingFrom) && connectingFrom?.nodeId !== req.id;
+      const shouldShowOutputConnector = isNodeHovered || connectingFrom?.nodeId === req.id;
       const inputX = pos.x + NODE_SIZE / 2;
       const inputY = pos.y;
-      const inputNodeRadius = (isNodeHovered || connectingFrom) ? 8 / view.scale : 6 / view.scale;
-      ctx.fillStyle = (isNodeHovered || connectingFrom) ? '#60a5fa' : '#9ca3af';
-      ctx.beginPath();
-      ctx.arc(inputX, inputY, inputNodeRadius, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 2 / view.scale;
-      ctx.stroke();
+      if (shouldShowInputConnector) {
+        const inputNodeRadius = 8 / view.scale;
+        ctx.fillStyle = '#60a5fa';
+        ctx.beginPath();
+        ctx.arc(inputX, inputY, inputNodeRadius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2 / view.scale;
+        ctx.stroke();
+      }
 
-      // Draw output connector point (bottom)
-      const outputX = pos.x + NODE_SIZE / 2;
-      const outputY = pos.y + NODE_HEIGHT;
-      const outputNodeRadius = (isNodeHovered || connectingFrom?.nodeId === req.id) ? 8 / view.scale : 6 / view.scale;
-      ctx.fillStyle = (isNodeHovered || connectingFrom?.nodeId === req.id) ? '#60a5fa' : '#9ca3af';
-      ctx.beginPath();
-      ctx.arc(outputX, outputY, outputNodeRadius, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 2 / view.scale;
-      ctx.stroke();
+      if (shouldShowOutputConnector) {
+        const outputX = pos.x + NODE_SIZE / 2;
+        const outputY = pos.y + NODE_HEIGHT;
+        const outputNodeRadius = 8 / view.scale;
+        ctx.fillStyle = '#60a5fa';
+        ctx.beginPath();
+        ctx.arc(outputX, outputY, outputNodeRadius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2 / view.scale;
+        ctx.stroke();
+      }
 
       if (isSelected) {
         const toolbarWidth = 60;
@@ -1237,7 +1438,58 @@ export const WorkflowPage: React.FC = () => {
         ctx.stroke();
       }
     });
-  }, [selectedWorkflow, nodePositions, selectedNodeId, view, canvasSize, triggerPos, hoveredNodeId, connectingFrom, mousePos]);
+  }, [selectedWorkflow, nodePositions, selectedNodeId, selectedEdgeId, view, canvasSize, triggerPos, hoveredNodeId, connectingFrom, mousePos]);
+
+  React.useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const handleCanvasWheel = (event: WheelEvent) => {
+      event.preventDefault();
+
+      const rect = canvas.getBoundingClientRect();
+      const container = canvasContainerRef.current;
+      const currentCanvasSize = canvasSizeRef.current;
+      const useZoom = event.metaKey || event.altKey;
+
+      setView((prev) => {
+        if (useZoom) {
+          const sx = event.clientX - rect.left;
+          const sy = event.clientY - rect.top;
+          const worldX = sx / prev.scale + prev.offsetX;
+          const worldY = sy / prev.scale + prev.offsetY;
+          const nextScale = Math.min(2, Math.max(0.5, prev.scale * (event.deltaY < 0 ? 1.1 : 0.9)));
+          const nextOffsetX = worldX - sx / nextScale;
+          const nextOffsetY = worldY - sy / nextScale;
+          const viewWidth = container ? container.clientWidth / nextScale : currentCanvasSize.width / nextScale;
+          const viewHeight = container ? container.clientHeight / nextScale : currentCanvasSize.height / nextScale;
+
+          return {
+            scale: nextScale,
+            offsetX: clampOffset(nextOffsetX, viewWidth, currentCanvasSize.width),
+            offsetY: clampOffset(nextOffsetY, viewHeight, currentCanvasSize.height),
+          };
+        }
+
+        const viewWidth = container ? container.clientWidth / prev.scale : currentCanvasSize.width / prev.scale;
+        const viewHeight = container ? container.clientHeight / prev.scale : currentCanvasSize.height / prev.scale;
+        const nextOffsetX = prev.offsetX + event.deltaX / prev.scale;
+        const nextOffsetY = prev.offsetY + event.deltaY / prev.scale;
+
+        return {
+          ...prev,
+          offsetX: clampOffset(nextOffsetX, viewWidth, currentCanvasSize.width),
+          offsetY: clampOffset(nextOffsetY, viewHeight, currentCanvasSize.height),
+        };
+      });
+    };
+
+    canvas.addEventListener('wheel', handleCanvasWheel, { passive: false });
+
+    return () => {
+      canvas.removeEventListener('wheel', handleCanvasWheel);
+    };
+  }, [setView]);
 
   return (
     <>
@@ -1296,8 +1548,6 @@ export const WorkflowPage: React.FC = () => {
               <div className="flex-1 min-h-0 relative">
                 <div ref={canvasContainerRef} className="absolute inset-0 overflow-hidden">
                   <WorkflowToolbar
-                    nodeSearch={nodeSearch}
-                    setNodeSearch={setNodeSearch}
                     view={view}
                     setView={setView}
                     canvasContainerRef={canvasContainerRef}
@@ -1316,9 +1566,27 @@ export const WorkflowPage: React.FC = () => {
                     onMouseMove={handleCanvasMouseMove}
                     onMouseUp={handleCanvasMouseUp}
                     onMouseLeave={handleCanvasMouseUp}
-                    onWheel={handleCanvasWheel}
                     style={{ touchAction: 'none', cursor: spaceDown ? 'grab' : 'default' }}
                   />
+                  {selectedWorkflow && selectedEdgeAction ? (
+                    <Button
+                      danger
+                      shape="circle"
+                      size="small"
+                      icon={<DeleteOutlined />}
+                      onClick={() => {
+                        removeEdge(selectedWorkflow.id, selectedEdgeAction.id);
+                        setSelectedEdgeId(null);
+                        message.success('连接已删除');
+                      }}
+                      className="!absolute z-20 shadow-md"
+                      style={{
+                        left: selectedEdgeAction.x,
+                        top: selectedEdgeAction.y,
+                        transform: 'translate(-50%, -50%)',
+                      }}
+                    />
+                  ) : null}
                 </div>
 
                 <WorkflowResultsPanel
@@ -1341,12 +1609,10 @@ export const WorkflowPage: React.FC = () => {
                 <WorkflowAddPanel
                   addPanelOpen={addPanelOpen}
                   addPanelRef={addPanelRef}
-                  addSearch={addSearch}
-                  setAddSearch={setAddSearch}
-                  filteredAvailableRequests={filteredAvailableRequests}
                   addPanelPos={addPanelPos}
                   view={view}
                   onRequestSelect={handleRequestSelect}
+                  availableRequests={availableRequests}
                 />
               </div>
             </>

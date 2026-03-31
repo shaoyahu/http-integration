@@ -69,6 +69,11 @@ export interface WorkflowStatePayload {
   selectedWorkflowId: string | null;
 }
 
+export interface WorkflowItemPayload {
+  workflow: Workflow;
+  selectedWorkflowId: string | null;
+}
+
 export interface WorkflowAvailableRequest extends HttpRequest {
   ownerUserId?: string;
   ownerUsername?: string;
@@ -110,6 +115,23 @@ export const fetchWorkflowState = async (): Promise<WorkflowStatePayload> => {
 
 export const saveWorkflowState = async (payload: WorkflowStatePayload) => {
   const response = await api.put('/workflows-state', payload);
+  return response.data;
+};
+
+export const saveWorkflowItem = async (payload: WorkflowItemPayload) => {
+  const response = await api.put(`/workflows-state/${payload.workflow.id}`, payload);
+  return response.data;
+};
+
+export const deleteWorkflowItem = async (workflowId: string, selectedWorkflowId: string | null) => {
+  const response = await api.delete(`/workflows-state/${workflowId}`, {
+    data: { selectedWorkflowId },
+  });
+  return response.data;
+};
+
+export const saveWorkflowSelection = async (selectedWorkflowId: string | null) => {
+  const response = await api.patch('/workflows-state/selection', { selectedWorkflowId });
   return response.data;
 };
 

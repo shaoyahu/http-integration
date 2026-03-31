@@ -163,18 +163,21 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
     for (const req of selectedWorkflow.requests) {
       const pos = nodePositionsRef.current[req.id];
       if (!pos) continue;
+      const shouldShowInputConnector = Boolean(connectingFrom) && connectingFrom?.nodeId !== req.id;
+      const shouldShowOutputConnector = hoveredNodeId === req.id || connectingFrom?.nodeId === req.id;
+      if (!shouldShowInputConnector && !shouldShowOutputConnector) continue;
 
       const inputX = pos.x + NODE_SIZE / 2;
       const inputY = pos.y;
       const inputDist = Math.sqrt((x - inputX) ** 2 + (y - inputY) ** 2);
-      if (inputDist <= 12) {
+      if (shouldShowInputConnector && inputDist <= 12) {
         return { nodeId: req.id, pointType: 'input' };
       }
 
       const outputX = pos.x + NODE_SIZE / 2;
       const outputY = pos.y + NODE_HEIGHT;
       const outputDist = Math.sqrt((x - outputX) ** 2 + (y - outputY) ** 2);
-      if (outputDist <= 12) {
+      if (shouldShowOutputConnector && outputDist <= 12) {
         return { nodeId: req.id, pointType: 'output' };
       }
     }
@@ -280,7 +283,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       if (startPos) {
         ctx.strokeStyle = '#60a5fa';
         ctx.lineWidth = 2 / view.scale;
-        ctx.setLineDash([5, 5]);
+        ctx.setLineDash([6 / view.scale, 6 / view.scale]);
         ctx.beginPath();
         ctx.moveTo(startPos.x, startPos.y);
         ctx.lineTo(mousePos.x, mousePos.y);
@@ -346,28 +349,33 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
       // Draw input connector point (top)
       const isNodeHovered = hoveredNodeId === req.id;
+      const shouldShowInputConnector = Boolean(connectingFrom) && connectingFrom?.nodeId !== req.id;
+      const shouldShowOutputConnector = isNodeHovered || connectingFrom?.nodeId === req.id;
       const inputX = pos.x + NODE_SIZE / 2;
       const inputY = pos.y;
-      const inputRadius = (isNodeHovered || connectingFrom) ? 8 / view.scale : 6 / view.scale;
-      ctx.fillStyle = (isNodeHovered || connectingFrom) ? '#60a5fa' : '#9ca3af';
-      ctx.beginPath();
-      ctx.arc(inputX, inputY, inputRadius, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 2 / view.scale;
-      ctx.stroke();
+      if (shouldShowInputConnector) {
+        const inputRadius = 8 / view.scale;
+        ctx.fillStyle = '#60a5fa';
+        ctx.beginPath();
+        ctx.arc(inputX, inputY, inputRadius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2 / view.scale;
+        ctx.stroke();
+      }
 
-      // Draw output connector point (bottom)
-      const outputX = pos.x + NODE_SIZE / 2;
-      const outputY = pos.y + NODE_HEIGHT;
-      const outputNodeRadius = (isNodeHovered || connectingFrom?.nodeId === req.id) ? 8 / view.scale : 6 / view.scale;
-      ctx.fillStyle = (isNodeHovered || connectingFrom?.nodeId === req.id) ? '#60a5fa' : '#9ca3af';
-      ctx.beginPath();
-      ctx.arc(outputX, outputY, outputNodeRadius, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 2 / view.scale;
-      ctx.stroke();
+      if (shouldShowOutputConnector) {
+        const outputX = pos.x + NODE_SIZE / 2;
+        const outputY = pos.y + NODE_HEIGHT;
+        const outputNodeRadius = 8 / view.scale;
+        ctx.fillStyle = '#60a5fa';
+        ctx.beginPath();
+        ctx.arc(outputX, outputY, outputNodeRadius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2 / view.scale;
+        ctx.stroke();
+      }
 
       if (isSelected) {
         const toolbarWidth = 60;

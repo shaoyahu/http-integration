@@ -266,7 +266,9 @@ export const drawCurveConnection = (
   start: Point,
   end: Point,
   color: string,
-  scale: number
+  scale: number,
+  lineWidth: number = 2,
+  dashed: boolean = true
 ) => {
   const dx = end.x - start.x;
   const dy = end.y - start.y;
@@ -279,10 +281,12 @@ export const drawCurveConnection = (
   const cp2y = end.y - curvature;
 
   ctx.strokeStyle = color;
-  ctx.lineWidth = 2 / scale;
+  ctx.lineWidth = lineWidth / scale;
   ctx.lineCap = 'round';
+  ctx.setLineDash(dashed ? [6 / scale, 6 / scale] : []);
   ctx.beginPath();
   ctx.moveTo(start.x, start.y);
   ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, end.x, end.y);
   ctx.stroke();
+  ctx.setLineDash([]);
 };
