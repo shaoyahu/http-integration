@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { HttpParam, ParamField, OutputField } from '../types/workflow'
+import type { HttpParam, ParamField, OutputField, WorkflowNodePosition } from '../types/workflow'
 
 export type { HttpParam, ParamField, OutputField }
 
@@ -18,7 +18,7 @@ export interface Workflow {
   edges: WorkflowEdge[]
   createdAt: number
   updatedAt: number
-  nodePositions?: Record<string, { x: number; y: number }>
+  nodePositions?: Record<string, WorkflowNodePosition>
 }
 
 export interface WorkflowRequest {
@@ -133,6 +133,7 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
               ...wf,
               updatedAt: Date.now(),
               requests: wf.requests.filter((req) => req.id !== requestId),
+              edges: (wf.edges || []).filter((edge) => edge.sourceId !== requestId && edge.targetId !== requestId),
               nodePositions: Object.fromEntries(Object.entries(wf.nodePositions || {}).filter(([key]) => key !== requestId)),
             }
           : wf

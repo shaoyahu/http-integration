@@ -1,24 +1,54 @@
 import React, { useCallback, useState } from 'react';
-import { Layout, Button, Space, message, Empty, Drawer } from 'antd';
-import { PlayCircleOutlined, MenuUnfoldOutlined, LeftOutlined, RightOutlined, DeleteOutlined } from '@ant-design/icons';
+import { Layout, Button, message, Empty, Drawer, Input, Tag, Tooltip } from 'antd';
+import {
+  PlayCircleOutlined,
+  MenuUnfoldOutlined,
+  LeftOutlined,
+  RightOutlined,
+  DeleteOutlined,
+  NodeIndexOutlined,
+  SearchOutlined,
+  FileSearchOutlined,
+  ApiOutlined,
+  BarsOutlined,
+  PlusOutlined,
+  DeploymentUnitOutlined,
+  RetweetOutlined,
+  ReloadOutlined,
+} from '@ant-design/icons';
 import axios from 'axios';
 import { useWorkflowStore } from '../store/workflowStore';
-import type { Workflow } from '../store/workflowStore';
+import type { Workflow, WorkflowRequest } from '../store/workflowStore';
 import Editor from '@monaco-editor/react';
 import { applyPathMapping, parseBodyValue, setNestedValue } from '../utils/requestPayload';
 import {
   deleteWorkflowItem,
   fetchWorkflowAvailableRequests,
+  fetchWorkflowRunLogs,
   fetchWorkflowState,
   healthCheck,
   proxyRequest,
   saveWorkflowItem,
+  saveWorkflowRunLog,
   saveWorkflowSelection,
   saveWorkflowState,
   type WorkflowAvailableRequest,
+  type WorkflowRunLogPayload,
   type WorkflowStatePayload,
 } from '../api/http';
 import { formatResponseData } from '../utils/response';
+import type { WorkflowExplanation, WorkflowRunLog, WorkflowRunNodeLog } from '../types/workflow';
+import {
+  analyzeWorkflow,
+  autoLayoutWorkflowNodes,
+  buildWorkflowExplanation,
+  getDefaultRunLogNodeId,
+  getViewportForBounds,
+  getWorkflowLayoutBounds,
+  maskSensitiveHeaders,
+  parseWorkflowReference,
+  sortRunLogsByStartedAt,
+} from '../utils/workflowEditor';
 import {
   WorkflowSidebar,
   WorkflowToolbar,
@@ -39,6 +69,7 @@ import {
 } from '../components/workflow';
 
 const { Content } = Layout;
+const WORKFLOW_VIEW_TOP_INSET = 104;
 
 const getErrorMessage = (error: unknown) => {
   if (axios.isAxiosError(error)) {
@@ -49,18 +80,46 @@ const getErrorMessage = (error: unknown) => {
   return error instanceof Error ? error.message : String(error);
 };
 
-const getSaveStatusText = (isLoading: boolean, isSaving: boolean, saveError: string | null) => {
+const getSaveStatusText = (
+  isLoading: boolean,
+  isSaving: boolean,
+  isDirty: boolean,
+  saveError: string | null
+) => {
   if (isLoading) {
     return '正在加载工作流...';
+  }
+  if (saveError) {
+    return '保存失败，请重试';
   }
   if (isSaving) {
     return '保存中...';
   }
-  if (saveError) {
-    return `保存失败：${saveError}`;
+  if (isDirty) {
+    return '未保存';
   }
   return '已保存';
 };
+
+const getSaveStatusColor = (
+  isLoading: boolean,
+  isSaving: boolean,
+  isDirty: boolean,
+  saveError: string | null
+): 'default' | 'processing' | 'success' | 'error' | 'warning' => {
+  if (saveError) {
+    return 'error';
+  }
+  if (isLoading || isSaving) {
+    return 'processing';
+  }
+  if (isDirty) {
+    return 'warning';
+  }
+  return 'success';
+};
+
+const getDurationText = (durationMs: number) => (durationMs > 0 ? `${durationMs}ms` : '--');
 
 const buildCurl = (url: string, method: string, params: Record<string, string>, body?: unknown) => {
   let fullUrl = url;
@@ -159,12 +218,12 @@ export const WorkflowPage: React.FC = () => {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
   const [running, setRunning] = useState(false);
-  const [results, setResults] = useState<any[]>([]);
+  const [results, setResults] = useState<WorkflowRunNodeLog[]>([]);
   const [detailDrawerOpen, setDetailDrawerOpen] = useState(false);
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [connectingFrom, setConnectingFrom] = useState<{ nodeId: string; pointType: 'output' } | null>(null);
   const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null);
-  const [selectedResult, setSelectedResult] = useState<any | null>(null);
+  const [selectedResult, setSelectedResult] = useState<WorkflowRunNodeLog | null>(null);
   const [nodePositions, setNodePositions] = useState<Record<string, { x: number; y: number }>>({});
   const nodePositionsRef = React.useRef<Record<string, { x: number; y: number }>>({});
   const [view, setView] = useState<{ scale: number; offsetX: number; offsetY: number }>({ scale: 1, offsetX: 0, offsetY: 0 });
@@ -176,15 +235,23 @@ export const WorkflowPage: React.FC = () => {
   const [addPanelPos, setAddPanelPos] = useState<{ x: number; y: number; afterRequestId: string | null }>({ x: 0, y: 0, afterRequestId: null });
   const [spaceDown, setSpaceDown] = useState(false);
   const [workflowSiderCollapsed, setWorkflowSiderCollapsed] = useState(false);
+  const [activeAssistTab, setActiveAssistTab] = useState<'requests' | 'search' | 'logs' | 'explain'>('requests');
+  const [assistPanelOpen, setAssistPanelOpen] = useState(true);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [runLogs, setRunLogs] = useState<WorkflowRunLog[]>([]);
+  const [selectedRunLog, setSelectedRunLog] = useState<WorkflowRunLog | null>(null);
+  const [selectedRunLogNodeId, setSelectedRunLogNodeId] = useState<string | null>(null);
+  const [runLogDrawerOpen, setRunLogDrawerOpen] = useState(false);
+  const [draggingRequestKey, setDraggingRequestKey] = useState<string | null>(null);
+  const [dropPreview, setDropPreview] = useState<{ x: number; y: number } | null>(null);
   const [isLoadingState, setIsLoadingState] = useState(true);
   const [isSavingState, setIsSavingState] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   const [isDatabaseConnected, setIsDatabaseConnected] = useState(false);
-  const [showSavedStatus, setShowSavedStatus] = useState(false);
   const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
   const canvasContainerRef = React.useRef<HTMLDivElement | null>(null);
   const addPanelRef = React.useRef<HTMLDivElement | null>(null);
+  const shouldResetViewOnWorkflowChangeRef = React.useRef(false);
   const dragRef = React.useRef<{
     id: string | null;
     startX: number;
@@ -201,9 +268,7 @@ export const WorkflowPage: React.FC = () => {
   const lastSavedSerializedRef = React.useRef('');
   const lastSavedSnapshotRef = React.useRef<WorkflowStatePayload>({ workflows: [], selectedWorkflowId: null });
   const saveTimerRef = React.useRef<number | null>(null);
-  const latestSaveRequestIdRef = React.useRef(0);
-  const saveInFlightRef = React.useRef(false);
-  const queuedPersistRef = React.useRef<WorkflowPersistRequest | null>(null);
+  const savePromiseRef = React.useRef<Promise<void>>(Promise.resolve());
 
   const selectedWorkflow = workflows.find((wf) => wf.id === selectedWorkflowId);
   const lastUpdated = selectedWorkflow?.updatedAt || selectedWorkflow?.createdAt;
@@ -211,66 +276,80 @@ export const WorkflowPage: React.FC = () => {
     () => ({ x: canvasSize.width / 2 - TRIGGER_WIDTH / 2, y: 12 }),
     [canvasSize]
   );
-
-  const showSaveStatus = isLoadingState || isSavingState || Boolean(saveError) || showSavedStatus;
-  const statusText = showSaveStatus
-    ? getSaveStatusText(isLoadingState, isSavingState, saveError)
-    : (isDatabaseConnected ? '数据库已连接' : '数据库未连接');
-  const statusColor = showSaveStatus
-    ? (saveError ? 'error' : (isLoadingState || isSavingState ? 'processing' : 'success'))
-    : (isDatabaseConnected ? 'success' : 'error');
+  const currentSnapshot = React.useMemo(
+    () => buildWorkflowSnapshot({ workflows, selectedWorkflowId }),
+    [workflows, selectedWorkflowId]
+  );
+  const currentSerializedSnapshot = React.useMemo(
+    () => serializeWorkflowSnapshot(currentSnapshot),
+    [currentSnapshot]
+  );
+  const isDirty = initializedRef.current && currentSerializedSnapshot !== lastSavedSerializedRef.current;
+  const saveStatusText = getSaveStatusText(isLoadingState, isSavingState, isDirty, saveError);
+  const saveStatusColor = getSaveStatusColor(isLoadingState, isSavingState, isDirty, saveError);
+  const databaseStatusText = isDatabaseConnected ? '数据库在线' : '数据库离线';
+  const databaseStatusColor = isDatabaseConnected ? 'success' : 'error';
+  const workflowExplanation = React.useMemo<WorkflowExplanation>(
+    () => (selectedWorkflow ? buildWorkflowExplanation(selectedWorkflow) : {
+      summary: ['请选择一个工作流。'],
+      steps: [],
+      disconnectedRequestIds: [],
+      warnings: [],
+    }),
+    [selectedWorkflow]
+  );
+  const selectedRunLogNode = selectedRunLog?.nodes.find((node) => node.requestId === selectedRunLogNodeId) || null;
+  const filteredWorkflowRequests = React.useMemo(() => {
+    if (!selectedWorkflow) {
+      return [];
+    }
+    const keyword = searchTerm.trim().toLowerCase();
+    if (!keyword) {
+      return selectedWorkflow.requests;
+    }
+    return selectedWorkflow.requests.filter((request) => request.name.toLowerCase().includes(keyword));
+  }, [searchTerm, selectedWorkflow]);
 
   const persistWorkflowState = useCallback(
-    async (request: WorkflowPersistRequest) => {
+    (request: WorkflowPersistRequest) => {
       const serialized = serializeWorkflowSnapshot(request.snapshot);
       if (serialized === lastSavedSerializedRef.current) {
-        return;
+        return Promise.resolve();
       }
-      if (saveInFlightRef.current) {
-        queuedPersistRef.current = request;
-        return;
-      }
+      const persistTask = async () => {
+        setIsSavingState(true);
+        setSaveError(null);
 
-      const requestId = latestSaveRequestIdRef.current + 1;
-      latestSaveRequestIdRef.current = requestId;
-      saveInFlightRef.current = true;
-      setIsSavingState(true);
-      setSaveError(null);
+        try {
+          if (request.type === 'workflow') {
+            await saveWorkflowItem({
+              workflow: request.workflow,
+              selectedWorkflowId: request.snapshot.selectedWorkflowId,
+            });
+          } else if (request.type === 'delete') {
+            await deleteWorkflowItem(request.workflowId, request.snapshot.selectedWorkflowId);
+          } else if (request.type === 'selection') {
+            await saveWorkflowSelection(request.snapshot.selectedWorkflowId);
+          } else {
+            await saveWorkflowState(request.snapshot);
+          }
 
-      try {
-        if (request.type === 'workflow') {
-          await saveWorkflowItem({
-            workflow: request.workflow,
-            selectedWorkflowId: request.snapshot.selectedWorkflowId,
-          });
-        } else if (request.type === 'delete') {
-          await deleteWorkflowItem(request.workflowId, request.snapshot.selectedWorkflowId);
-        } else if (request.type === 'selection') {
-          await saveWorkflowSelection(request.snapshot.selectedWorkflowId);
-        } else {
-          await saveWorkflowState(request.snapshot);
-        }
-        lastSavedSerializedRef.current = serialized;
-        lastSavedSnapshotRef.current = request.snapshot;
-        setLastSavedAt(Date.now());
-      } catch (error) {
-        const details = getErrorMessage(error);
-        setSaveError(details);
-        throw new Error(details);
-      } finally {
-        saveInFlightRef.current = false;
-        if (latestSaveRequestIdRef.current === requestId) {
+          lastSavedSerializedRef.current = serialized;
+          lastSavedSnapshotRef.current = request.snapshot;
+        } catch (error) {
+          const details = getErrorMessage(error);
+          setSaveError(details);
+          throw new Error(details);
+        } finally {
           setIsSavingState(false);
         }
-        if (queuedPersistRef.current) {
-          const latestRequest = queuedPersistRef.current;
-          queuedPersistRef.current = null;
-          const latestSerialized = serializeWorkflowSnapshot(latestRequest.snapshot);
-          if (latestSerialized !== lastSavedSerializedRef.current) {
-            await persistWorkflowState(latestRequest);
-          }
-        }
-      }
+      };
+
+      savePromiseRef.current = savePromiseRef.current
+        .catch(() => undefined)
+        .then(persistTask);
+
+      return savePromiseRef.current;
     },
     []
   );
@@ -370,15 +449,34 @@ export const WorkflowPage: React.FC = () => {
   }, []);
 
   React.useEffect(() => {
-    if (!lastSavedAt || isLoadingState || isSavingState || saveError) {
+    if (!selectedWorkflowId) {
+      setRunLogs([]);
+      setSelectedRunLog(null);
+      setSelectedRunLogNodeId(null);
       return;
     }
-    setShowSavedStatus(true);
-    const timer = window.setTimeout(() => {
-      setShowSavedStatus(false);
-    }, 3000);
-    return () => window.clearTimeout(timer);
-  }, [lastSavedAt, isLoadingState, isSavingState, saveError]);
+
+    let cancelled = false;
+    const loadRunLogs = async () => {
+      try {
+        const logs = await fetchWorkflowRunLogs(selectedWorkflowId);
+        if (cancelled) {
+          return;
+        }
+        setRunLogs(sortRunLogsByStartedAt(logs));
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        console.error('Failed to load workflow run logs:', getErrorMessage(error));
+      }
+    };
+
+    loadRunLogs();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedWorkflowId]);
 
   // Update canvas size based on container
   React.useEffect(() => {
@@ -447,7 +545,10 @@ export const WorkflowPage: React.FC = () => {
   React.useEffect(() => {
     setAddPanelOpen(false);
     setSelectedNodeId(null);
-    setView({ scale: 1, offsetX: 0, offsetY: 0 });
+    setSelectedEdgeId(null);
+    setResults([]);
+    setSelectedResult(null);
+    shouldResetViewOnWorkflowChangeRef.current = true;
   }, [selectedWorkflowId]);
 
   React.useEffect(() => {
@@ -475,122 +576,152 @@ export const WorkflowPage: React.FC = () => {
     return () => document.removeEventListener('mousedown', handleDocClick);
   }, [addPanelOpen]);
 
+  const flushPendingSave = useCallback(async () => {
+    if (saveTimerRef.current) {
+      window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+
+    const latestSnapshot = buildWorkflowSnapshot(useWorkflowStore.getState());
+    const request = buildWorkflowPersistRequest(lastSavedSnapshotRef.current, latestSnapshot);
+    if (request) {
+      await persistWorkflowState(request);
+      return;
+    }
+
+    await savePromiseRef.current;
+  }, [persistWorkflowState]);
+
+  const handleRetrySave = useCallback(async () => {
+    try {
+      await flushPendingSave();
+      message.success('工作流已保存');
+    } catch (error) {
+      message.error(getErrorMessage(error));
+    }
+  }, [flushPendingSave]);
+
+  const ensureWorkflowReadyToRun = useCallback(async () => {
+    if (saveError) {
+      message.error('当前保存失败，请先重试保存');
+      return false;
+    }
+
+    try {
+      await flushPendingSave();
+    } catch (error) {
+      message.error(getErrorMessage(error));
+      return false;
+    }
+
+    return true;
+  }, [flushPendingSave, saveError]);
+
   const handleRunWorkflow = async () => {
-    if (!selectedWorkflow) {
+    if (!selectedWorkflowId) {
+      return;
+    }
+
+    const canRun = await ensureWorkflowReadyToRun();
+    if (!canRun) {
+      return;
+    }
+
+    const latestWorkflow = useWorkflowStore.getState().workflows.find((workflow) => workflow.id === selectedWorkflowId);
+    if (!latestWorkflow) {
       return;
     }
 
     setRunning(true);
     setResults([]);
+    setSelectedResult(null);
 
     try {
-      const workflowResults: any[] = [];
-      const localRequestOutputs: any[] = [];
-      const edges = selectedWorkflow.edges || [];
-
-      const getExecutionOrder = (): string[] => {
-        const order: string[] = [];
-        const visited = new Set<string>();
-
-        const findNextNodes = (nodeId: string): string[] => {
-          return edges
-            .filter((e) => e.sourceId === nodeId)
-            .map((e) => e.targetId);
-        };
-
-        const traverse = (nodeId: string) => {
-          if (visited.has(nodeId)) return;
-          visited.add(nodeId);
-          order.push(nodeId);
-
-          const nextNodes = findNextNodes(nodeId);
-          for (const nextId of nextNodes) {
-            traverse(nextId);
-          }
-        };
-
-        traverse('trigger');
-        return order.filter((id) => id !== 'trigger');
-      };
-
-      const executionOrder = getExecutionOrder();
+      const workflowStartedAt = new Date();
+      const workflowResults: WorkflowRunNodeLog[] = [];
+      const requestOutputMap = new Map<string, Record<string, unknown>>();
+      const analysis = analyzeWorkflow(latestWorkflow);
+      const executionOrder = analysis.orderedRequestIds;
 
       for (const requestId of executionOrder) {
-        const request = selectedWorkflow.requests.find((r) => r.id === requestId);
-        if (!request) continue;
+        const request = latestWorkflow.requests.find((item) => item.id === requestId);
+        if (!request) {
+          continue;
+        }
+
+        let headers = request.headers.reduce<Record<string, string>>(
+          (acc, header) => (header.key ? { ...acc, [header.key]: header.value } : acc),
+          {}
+        );
+        let params = request.params.reduce<Record<string, string>>(
+          (acc, param) => (param.key ? { ...acc, [param.key]: param.value } : acc),
+          {}
+        );
+        let url = request.url;
+        let body = request.body;
+        let requestBody: unknown = undefined;
+        const resolvedInputs: Record<string, unknown> = {};
+        const requestStartedAt = new Date();
+        const startTime = Date.now();
 
         try {
-          let headers = request.headers.reduce(
-            (acc, h) => (h.key ? { ...acc, [h.key]: h.value } : acc),
-            {} as Record<string, string>
-          );
-
-          let params = { ...request.params.reduce(
-            (acc, p) => (p.key ? { ...acc, [p.key]: p.value } : acc),
-            {} as Record<string, string>
-          )};
-
-          let url = request.url;
-          let body = request.body;
-          let bodyObj: Record<string, any> | null = {};
+          let bodyObj: Record<string, unknown> | null = {};
           if (body && body.trim() !== '') {
             try {
               bodyObj = JSON.parse(body);
-            } catch (e) {
+            } catch {
               bodyObj = null;
             }
           }
+
           let bodyUpdated = false;
           const mappings = request.apiMappings || [];
 
-          if (request.inputFields && request.inputFields.length > 0) {
-            for (const field of request.inputFields) {
+          for (const field of request.inputFields || []) {
+            const value = request.inputValues?.[field.name];
+            const reference = parseWorkflowReference(value);
 
-              const value = request.inputValues?.[field.name];
+            let processedValue: unknown = value;
+            if (reference) {
+              processedValue = requestOutputMap.get(reference.requestId)?.[reference.fieldName];
+            }
 
-              if (value === undefined && field.required) {
-                throw new Error(`${field.name} 是必填字段`);
-              }
+            if ((processedValue === undefined || processedValue === '') && field.required) {
+              throw new Error(`${field.name} 是必填字段`);
+            }
 
-              let processedValue = value;
-              if (value && value.startsWith('{{') && value.endsWith('}}')) {
-                const ref = value.slice(2, -2);
-                const [refRequestId, fieldName] = ref.split('.');
-                const refRequest = localRequestOutputs.find((output) => output.requestId === refRequestId);
-                if (refRequest) {
-                  const refOutput = refRequest.outputs.find((out) => out.name === fieldName);
-                  if (refOutput) {
-                    processedValue = refOutput.value;
-                  }
+            if (processedValue === undefined || processedValue === '') {
+              continue;
+            }
+
+            resolvedInputs[field.name] = processedValue;
+
+            const mapping = mappings.find((item) => item.inputName === field.name && item.key);
+            if (mapping) {
+              if (mapping.target === 'path') {
+                url = applyPathMapping(url, mapping.key, String(processedValue));
+              } else if (mapping.target === 'params') {
+                params[mapping.key] = String(processedValue);
+              } else if (mapping.target === 'body') {
+                if (!bodyObj) {
+                  throw new Error('Body 格式错误');
                 }
+                setNestedValue(bodyObj, mapping.key, parseBodyValue(processedValue));
+                bodyUpdated = true;
               }
+              continue;
+            }
 
-              if (processedValue !== undefined) {
-                const mapping = mappings.find((m: any) => m.inputName === field.name && m.key);
-                if (mapping) {
-                  if (mapping.target === 'path') {
-                    url = applyPathMapping(url, mapping.key, String(processedValue));
-                  } else if (mapping.target === 'params') {
-                    params[mapping.key] = String(processedValue);
-                  } else if (mapping.target === 'body') {
-                    if (!bodyObj) {
-                      throw new Error(`Body 格式错误`);
-                    }
-                    setNestedValue(bodyObj, mapping.key, parseBodyValue(processedValue));
-                    bodyUpdated = true;
-                  }
-                } else if (field.type === 'params') {
-                  params[field.name] = String(processedValue);
-                } else if (field.type === 'body') {
-                  if (!bodyObj) {
-                    throw new Error(`Body 格式错误`);
-                  }
-                  setNestedValue(bodyObj, field.name, parseBodyValue(processedValue));
-                  bodyUpdated = true;
-                } else if (field.type === 'path') {
-                  url = applyPathMapping(url, field.name, String(processedValue));
-                }
+            if (field.type === 'params') {
+              params[field.name] = String(processedValue);
+            } else if (field.type === 'body') {
+              if (!bodyObj) {
+                throw new Error('Body 格式错误');
               }
+              setNestedValue(bodyObj, field.name, parseBodyValue(processedValue));
+              bodyUpdated = true;
+            } else if (field.type === 'path') {
+              url = applyPathMapping(url, field.name, String(processedValue));
             }
           }
 
@@ -598,16 +729,14 @@ export const WorkflowPage: React.FC = () => {
             body = JSON.stringify(bodyObj || {}, null, 2);
           }
 
-          let requestBody = undefined;
           if (['POST', 'PUT', 'PATCH'].includes(request.method) && body) {
             try {
               requestBody = JSON.parse(body);
-            } catch (e) {
+            } catch {
               requestBody = body;
             }
           }
 
-          const startTime = Date.now();
           const response = await proxyRequest({
             url,
             method: request.method,
@@ -615,74 +744,112 @@ export const WorkflowPage: React.FC = () => {
             body: requestBody,
             params,
           });
-          const time = Date.now() - startTime;
-
+          const durationMs = Date.now() - startTime;
+          const requestFinishedAt = new Date();
           const responseData = response.data !== undefined && response.data !== null ? response.data : response;
-          const outputData: any = {};
-          if (request.outputFields && request.outputFields.length > 0) {
-            for (const field of request.outputFields) {
-              try {
-                const keys = field.path.split('.');
-                let value = responseData;
-                for (const key of keys) {
-                  value = value?.[key];
-                }
-                outputData[field.name] = value;
-              } catch (e) {
-                outputData[field.name] = undefined;
-              }
-            }
-          }
 
-          localRequestOutputs.push({
+          const outputData = (request.outputFields || []).reduce<Record<string, unknown>>((acc, field) => {
+            try {
+              const value = field.path.split('.').reduce<unknown>((cursor, key) => (
+                cursor && typeof cursor === 'object'
+                  ? (cursor as Record<string, unknown>)[key]
+                  : undefined
+              ), responseData);
+              acc[field.name] = value;
+            } catch {
+              acc[field.name] = undefined;
+            }
+            return acc;
+          }, {});
+
+          requestOutputMap.set(request.id, outputData);
+
+          workflowResults.push({
             requestId: request.id,
             requestName: request.name,
-            outputs: Object.entries(outputData).map(([key, value]) => ({
-              name: key,
-              value,
-            })),
-          });
-
-          workflowResults.push({
-            requestId: request.id,
-            name: request.name,
+            method: request.method,
+            url,
             status: 'success',
-            statusCode: response.status || 200,
-            time,
-            data: responseData,
-            headers: response.headers || {},
+            statusCode: typeof response.status === 'number' ? response.status : 200,
+            durationMs,
+            startedAt: requestStartedAt.toISOString(),
+            finishedAt: requestFinishedAt.toISOString(),
+            upstreamRequestIds: analysis.upstreamByRequestId[request.id] || [],
             requestInfo: {
               url,
               method: request.method,
+              headers: maskSensitiveHeaders(headers),
               params,
               body: requestBody,
-              headers,
+              resolvedInputs,
             },
+            responseData,
           });
-        } catch (error: any) {
+        } catch (error) {
+          const requestFinishedAt = new Date();
+          const details = getErrorMessage(error);
+          const axiosStatus = axios.isAxiosError(error) ? error.response?.status : undefined;
+          const axiosData = axios.isAxiosError(error) ? error.response?.data : undefined;
           workflowResults.push({
             requestId: request.id,
-            name: request.name,
+            requestName: request.name,
+            method: request.method,
+            url,
             status: 'error',
-            statusCode: error.response?.status || 500,
-            time: 0,
-            error: error.message,
-            data: error.response?.data || error.message,
-            headers: error.response?.headers || {},
+            statusCode: typeof axiosStatus === 'number' ? axiosStatus : 500,
+            durationMs: Math.max(0, Date.now() - startTime),
+            startedAt: requestStartedAt.toISOString(),
+            finishedAt: requestFinishedAt.toISOString(),
+            upstreamRequestIds: analysis.upstreamByRequestId[request.id] || [],
             requestInfo: {
               url,
               method: request.method,
+              headers: maskSensitiveHeaders(headers),
               params,
               body: requestBody,
-              headers,
+              resolvedInputs,
             },
+            responseData: axiosData ?? details,
+            error: details,
           });
           break;
         }
       }
 
+      const workflowFinishedAt = new Date();
+      const status = workflowResults.some((node) => node.status === 'error') ? 'error' : 'success';
+      const logPayload: WorkflowRunLogPayload = {
+        workflowId: latestWorkflow.id,
+        workflowName: latestWorkflow.name,
+        status,
+        startedAt: workflowStartedAt.toISOString(),
+        finishedAt: workflowFinishedAt.toISOString(),
+        durationMs: workflowFinishedAt.getTime() - workflowStartedAt.getTime(),
+        nodes: workflowResults,
+      };
+
       setResults(workflowResults);
-      message.success('工作流执行完成');
+      if (workflowResults.length > 0) {
+        const currentNode = workflowResults.find((node) => node.status === 'error') || workflowResults[0];
+        setSelectedResult(currentNode);
+      }
+
+      try {
+        const savedLog = await saveWorkflowRunLog(latestWorkflow.id, logPayload);
+        setRunLogs((previous) => sortRunLogsByStartedAt([savedLog, ...previous.filter((log) => log.id !== savedLog.id)]));
+        setActiveAssistTab('logs');
+        setAssistPanelOpen(true);
+      } catch (error) {
+        console.error('Failed to save workflow run log:', getErrorMessage(error));
+      }
+
+      if (workflowResults.length === 0) {
+        message.warning('当前没有接入手动触发器的节点');
+      } else if (status === 'error') {
+        message.error('工作流执行失败');
+      } else {
+        message.success('工作流执行完成');
+      }
     } catch (error) {
       message.error('工作流执行失败');
     } finally {
@@ -695,6 +862,20 @@ export const WorkflowPage: React.FC = () => {
     if (!rect) return { x: 0, y: 0 };
     const sx = event.clientX - rect.left;
     const sy = event.clientY - rect.top;
+    return {
+      x: sx / view.scale + view.offsetX,
+      y: sy / view.scale + view.offsetY,
+    };
+  };
+
+  const getCanvasPointFromClient = (clientX: number, clientY: number) => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) {
+      return { x: 0, y: 0 };
+    }
+
+    const sx = clientX - rect.left;
+    const sy = clientY - rect.top;
     return {
       x: sx / view.scale + view.offsetX,
       y: sy / view.scale + view.offsetY,
@@ -876,82 +1057,154 @@ export const WorkflowPage: React.FC = () => {
     setView((prev) => ({ ...prev, offsetX: nextOffsetX, offsetY: nextOffsetY }));
     setSelectedNodeId(id);
   };
+  const fitViewToPositions = useCallback((positions: Record<string, { x: number; y: number }>) => {
+    const container = canvasContainerRef.current;
+    if (!container) {
+      return;
+    }
 
-  const handleRequestSelect = (requestKey: string) => {
-    if (!selectedWorkflow) return;
-    const request = availableRequests.find((r) => `${r.ownerUserId || 'self'}:${r.id}` === requestKey);
-    if (request) {
-      const newId = Date.now().toString();
-      const nextRequest = {
-        ...request,
-        id: newId,
-        inputValues: {},
-        inputFields: request.inputFields || [],
-        outputFields: request.outputFields || [],
-        apiMappings: request.apiMappings || [],
-      };
-      const existingRequests = [...selectedWorkflow.requests];
-      const currentRequests = [...existingRequests];
-      const insertIndex = addPanelPos.afterRequestId
-        ? currentRequests.findIndex((req) => req.id === addPanelPos.afterRequestId) + 1
-        : currentRequests.length;
-      const normalizedIndex = insertIndex < 0 ? currentRequests.length : insertIndex;
-      currentRequests.splice(normalizedIndex, 0, nextRequest as any);
+    const bounds = getWorkflowLayoutBounds(positions, {
+      triggerX: triggerPos.x,
+      triggerY: triggerPos.y,
+      triggerWidth: TRIGGER_WIDTH,
+      triggerHeight: TRIGGER_HEIGHT,
+      nodeWidth: NODE_WIDTH,
+      nodeHeight: NODE_HEIGHT,
+    });
 
-      const clampPos = (x: number, y: number, snapX: boolean = true, snapY: boolean = true) => ({
-        x: Math.max(0, snapX ? snapToGrid(x, 20) : x),
-        y: Math.max(0, snapY ? snapToGrid(y, 20) : y),
-      });
+    setView(getViewportForBounds(bounds, {
+      viewportWidth: container.clientWidth,
+      viewportHeight: container.clientHeight,
+      topInset: WORKFLOW_VIEW_TOP_INSET,
+    }));
+  }, [triggerPos]);
 
-      const prevReq = normalizedIndex > 0 ? currentRequests[normalizedIndex - 1] : null;
-      const nextReq = normalizedIndex < existingRequests.length ? existingRequests[normalizedIndex] : null;
-      const prevPos = prevReq ? nodePositionsRef.current[prevReq.id] : null;
-      const nextPos = nextReq ? nodePositionsRef.current[nextReq.id] : null;
+  const addRequestToCanvas = useCallback((
+    request: WorkflowAvailableRequest,
+    placement?: { x: number; y: number; afterRequestId?: string | null }
+  ) => {
+    if (!selectedWorkflow) {
+      return;
+    }
 
-      const nextPositions: Record<string, { x: number; y: number }> = {
-        ...nodePositions,
-      };
+    const newId = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+    const nextRequest: WorkflowRequest = {
+      id: newId,
+      name: request.name,
+      method: request.method,
+      url: request.url,
+      headers: request.headers || [],
+      params: request.params || [],
+      body: request.body || '',
+      inputFields: request.inputFields || [],
+      outputFields: request.outputFields || [],
+      inputValues: {},
+      apiMappings: request.apiMappings || [],
+      iconUrl: request.iconUrl,
+    };
 
-      let targetX = addPanelPos.x - NODE_WIDTH / 2;
-      let targetY = addPanelPos.y - NODE_HEIGHT / 2;
+    const currentRequests = [...selectedWorkflow.requests];
+    const insertIndex = placement?.afterRequestId
+      ? currentRequests.findIndex((item) => item.id === placement.afterRequestId) + 1
+      : currentRequests.length;
+    const normalizedIndex = insertIndex < 0 ? currentRequests.length : insertIndex;
+    currentRequests.splice(normalizedIndex, 0, nextRequest);
 
-      if (!prevReq && existingRequests.length === 0) {
-        targetX = triggerPos.x + TRIGGER_WIDTH / 2 - NODE_WIDTH / 2;
-        targetY = triggerPos.y + TRIGGER_HEIGHT + MIN_NODE_VERTICAL_GAP;
-      } else if (prevPos && !nextPos) {
-        targetX = prevPos.x;
-        targetY = prevPos.y + NODE_HEIGHT + MIN_NODE_VERTICAL_GAP;
-      } else if (prevPos && nextPos) {
-        const minY = prevPos.y + NODE_HEIGHT + MIN_NODE_VERTICAL_GAP;
-        const maxY = nextPos.y - NODE_HEIGHT - MIN_NODE_VERTICAL_GAP;
-        targetX = (prevPos.x + nextPos.x) / 2;
-
-        if (minY <= maxY) {
-          targetY = (minY + maxY) / 2;
-        } else {
-          const requiredShift = snapToGrid(minY - maxY, 20);
-          for (let i = normalizedIndex; i < existingRequests.length; i += 1) {
-            const reqToShift = existingRequests[i];
-            const original = nextPositions[reqToShift.id] || nodePositionsRef.current[reqToShift.id];
-            if (!original) continue;
-            nextPositions[reqToShift.id] = clampPos(original.x, original.y + requiredShift);
-          }
-          targetY = minY;
+    const currentPositions = { ...nodePositionsRef.current };
+    const fallbackX = triggerPos.x + TRIGGER_WIDTH / 2 - NODE_WIDTH / 2;
+    const fallbackY = triggerPos.y + TRIGGER_HEIGHT + MIN_NODE_VERTICAL_GAP;
+    const previousRequest = normalizedIndex > 0 ? currentRequests[normalizedIndex - 1] : null;
+    const previousPosition = previousRequest ? currentPositions[previousRequest.id] : null;
+    const nextPosition = placement
+      ? {
+          x: Math.max(0, snapToGrid(placement.x - NODE_WIDTH / 2, 20)),
+          y: Math.max(0, snapToGrid(placement.y - NODE_HEIGHT / 2, 20)),
         }
-      };
+      : previousPosition
+        ? {
+            x: previousPosition.x,
+            y: previousPosition.y + NODE_HEIGHT + MIN_NODE_VERTICAL_GAP,
+          }
+        : {
+            x: fallbackX,
+            y: fallbackY,
+          };
 
-      if (!prevReq && existingRequests.length === 0) {
-        nextPositions[newId] = clampPos(targetX, targetY, false, true);
-      } else {
-        nextPositions[newId] = clampPos(targetX, targetY);
-      }
-      setNodePositions(nextPositions);
-      updateWorkflow(selectedWorkflow.id, { requests: currentRequests, nodePositions: nextPositions });
-      setSelectedNodeId(newId);
-      message.success('请求已添加');
+    const mergedPositions = {
+      ...currentPositions,
+      [newId]: nextPosition,
+    };
+
+    setNodePositions(mergedPositions);
+    updateWorkflow(selectedWorkflow.id, {
+      requests: currentRequests,
+      nodePositions: mergedPositions,
+    });
+    setSelectedNodeId(newId);
+    setActiveAssistTab('requests');
+    message.success('请求已添加');
+  }, [selectedWorkflow, triggerPos, updateWorkflow]);
+
+  const handleRequestSelect = (requestKey: string, placement?: { x: number; y: number; afterRequestId?: string | null }) => {
+    const request = availableRequests.find((item) => `${item.ownerUserId || 'self'}:${item.id}` === requestKey);
+    if (request) {
+      addRequestToCanvas(request, placement || {
+        x: addPanelPos.x || triggerPos.x + TRIGGER_WIDTH / 2,
+        y: addPanelPos.y || triggerPos.y + TRIGGER_HEIGHT + MIN_NODE_VERTICAL_GAP,
+        afterRequestId: addPanelPos.afterRequestId,
+      });
     }
     setAddPanelOpen(false);
   };
+
+  const handleAutoLayout = useCallback(() => {
+    if (!selectedWorkflow) {
+      return;
+    }
+
+    const nextPositions = autoLayoutWorkflowNodes(selectedWorkflow, {
+      canvasWidth: Math.max(canvasSize.width, canvasContainerRef.current?.clientWidth || canvasSize.width),
+      triggerX: triggerPos.x,
+      triggerY: triggerPos.y,
+      triggerWidth: TRIGGER_WIDTH,
+      triggerHeight: TRIGGER_HEIGHT,
+      nodeWidth: NODE_WIDTH,
+      nodeHeight: NODE_HEIGHT,
+      verticalGap: MIN_NODE_VERTICAL_GAP,
+      horizontalGap: MIN_NODE_HORIZONTAL_GAP,
+    });
+
+    setNodePositions(nextPositions);
+    updateWorkflow(selectedWorkflow.id, { nodePositions: nextPositions });
+    fitViewToPositions(nextPositions);
+    message.success('节点已自动排列');
+  }, [canvasSize.width, fitViewToPositions, selectedWorkflow, triggerPos, updateWorkflow]);
+
+  const handleResetView = useCallback(() => {
+    if (Object.keys(nodePositionsRef.current).length > 0) {
+      fitViewToPositions(nodePositionsRef.current);
+      return;
+    }
+    setView({ scale: 1, offsetX: 0, offsetY: -WORKFLOW_VIEW_TOP_INSET });
+  }, [fitViewToPositions]);
+
+  React.useEffect(() => {
+    if (!selectedWorkflow || !shouldResetViewOnWorkflowChangeRef.current) {
+      return;
+    }
+    if (selectedWorkflow.requests.length > 0 && Object.keys(nodePositions).length < selectedWorkflow.requests.length) {
+      return;
+    }
+
+    handleResetView();
+    shouldResetViewOnWorkflowChangeRef.current = false;
+  }, [handleResetView, nodePositions, selectedWorkflow]);
+
+  const openRunLogDetail = useCallback((log: WorkflowRunLog) => {
+    setSelectedRunLog(log);
+    setSelectedRunLogNodeId(getDefaultRunLogNodeId(log));
+    setRunLogDrawerOpen(true);
+  }, []);
 
   const handleCanvasMouseDown = (event: React.MouseEvent<HTMLCanvasElement>) => {
     if (!selectedWorkflow) return;
@@ -1123,6 +1376,34 @@ export const WorkflowPage: React.FC = () => {
     dragRef.current.mode = null;
   };
 
+  const handleCanvasDragOver = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!selectedWorkflow || !draggingRequestKey) {
+      return;
+    }
+    event.preventDefault();
+    const point = getCanvasPointFromClient(event.clientX, event.clientY);
+    setDropPreview(point);
+  };
+
+  const handleCanvasDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
+      return;
+    }
+    setDropPreview(null);
+  };
+
+  const handleCanvasDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    const requestKey = event.dataTransfer.getData('application/workflow-request') || draggingRequestKey;
+    if (!requestKey) {
+      return;
+    }
+    event.preventDefault();
+    const point = getCanvasPointFromClient(event.clientX, event.clientY);
+    handleRequestSelect(requestKey, point);
+    setDraggingRequestKey(null);
+    setDropPreview(null);
+  };
+
   const selectedEdgeAction = React.useMemo(() => {
     if (!selectedWorkflow || !selectedEdgeId) {
       return null;
@@ -1155,14 +1436,17 @@ export const WorkflowPage: React.FC = () => {
     };
   }, [selectedWorkflow, selectedEdgeId, nodePositions, triggerPos, view, canvasSize]);
 
-  const handleImportOutputFields = (result: any) => {
-    if (result.data && selectedWorkflowId) {
+  const handleImportOutputFields = (result: WorkflowRunNodeLog) => {
+    if (result.responseData && selectedWorkflowId) {
       const workflow = workflows.find((wf) => wf.id === selectedWorkflowId);
       if (workflow) {
         const request = workflow.requests.find((req) => req.id === result.requestId);
         if (request) {
-          useWorkflowStore.getState().addOutputFieldsFromResponse(selectedWorkflowId, request.id, result.data);
-          message.success(`已为 ${request.name} 导入 ${Object.keys(result.data).length} 个出参字段`);
+          useWorkflowStore.getState().addOutputFieldsFromResponse(selectedWorkflowId, request.id, result.responseData);
+          const responseObject = typeof result.responseData === 'object' && result.responseData !== null
+            ? Object.keys(result.responseData as Record<string, unknown>).length
+            : 0;
+          message.success(`已为 ${request.name} 导入 ${responseObject} 个出参字段`);
         }
       }
     }
@@ -1494,11 +1778,21 @@ export const WorkflowPage: React.FC = () => {
   return (
     <>
       <WorkflowSidebar
+        workflows={workflows}
+        selectedWorkflowId={selectedWorkflowId}
         isLoadingState={isLoadingState}
-        statusColor={statusColor}
-        statusText={statusText}
+        databaseStatusColor={databaseStatusColor}
+        databaseStatusText={databaseStatusText}
         workflowSiderCollapsed={workflowSiderCollapsed}
+        editingId={editingId}
+        editingName={editingName}
         setWorkflowSiderCollapsed={setWorkflowSiderCollapsed}
+        setEditingId={setEditingId}
+        setEditingName={setEditingName}
+        onSelectWorkflow={setSelectedWorkflow}
+        onAddWorkflow={addWorkflow}
+        onDeleteWorkflow={deleteWorkflow}
+        onRenameWorkflow={(id, name) => updateWorkflow(id, { name })}
       />
 
       <Content className="flex-1 bg-[#f5f5f5] overflow-hidden !p-0 !relative">
@@ -1522,38 +1816,265 @@ export const WorkflowPage: React.FC = () => {
             </div>
           ) : selectedWorkflow ? (
             <>
-              {/* Header */}
-              <div className="bg-white border-b border-gray-200 px-4 h-14 flex items-center justify-between sticky top-0 z-20">
-                <div className="flex items-center gap-3 min-w-0">
-                  <div>
-                    <div className="text-base font-semibold text-gray-800 truncate">{selectedWorkflow.name}</div>
-                    <div className="text-xs text-gray-500">
-                      最近修改 {lastUpdated ? new Date(lastUpdated).toLocaleString() : '--'}
+              <div className="flex-1 min-h-0 relative">
+                <div
+                  ref={canvasContainerRef}
+                  className={`absolute inset-0 overflow-hidden ${draggingRequestKey ? 'ring-1 ring-blue-200' : ''}`}
+                  onDragOver={handleCanvasDragOver}
+                  onDrop={handleCanvasDrop}
+                  onDragLeave={handleCanvasDragLeave}
+                >
+                  <div className="absolute left-4 right-4 top-4 z-20">
+                    <div className="bg-white/95 backdrop-blur border border-gray-200 rounded-2xl shadow-lg px-5 py-3 flex items-center justify-between gap-4">
+                      <div className="min-w-0">
+                        <div className="text-base font-semibold text-gray-800 truncate">{selectedWorkflow.name}</div>
+                        <div className="text-xs text-gray-500">
+                          最近修改 {lastUpdated ? new Date(lastUpdated).toLocaleString() : '--'}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3 flex-shrink-0">
+                        <Tag color={saveStatusColor} className="m-0 rounded-full px-3 py-1">
+                          {saveStatusText}
+                        </Tag>
+                        {saveError ? (
+                          <Button size="small" icon={<ReloadOutlined />} onClick={handleRetrySave}>
+                            重试保存
+                          </Button>
+                        ) : null}
+                        <Button
+                          type="primary"
+                          icon={<PlayCircleOutlined />}
+                          onClick={handleRunWorkflow}
+                          loading={running}
+                          size="middle"
+                        >
+                          运行工作流
+                        </Button>
+                      </div>
                     </div>
                   </div>
-                </div>
-                <Space>
-                  <Button
-                    type="primary"
-                    icon={<PlayCircleOutlined />}
-                    onClick={handleRunWorkflow}
-                    loading={running}
-                    size="middle"
-                  >
-                    运行工作流
-                  </Button>
-                </Space>
-              </div>
 
-              <div className="flex-1 min-h-0 relative">
-                <div ref={canvasContainerRef} className="absolute inset-0 overflow-hidden">
+                  <div className="absolute left-4 top-24 z-20 flex items-start gap-3">
+                    <div className="w-14 bg-white/95 backdrop-blur border border-gray-200 rounded-2xl shadow-lg flex flex-col items-center py-3 gap-2">
+                      {[
+                        { key: 'requests', label: '请求', icon: <ApiOutlined /> },
+                        { key: 'search', label: '搜索', icon: <SearchOutlined /> },
+                        { key: 'logs', label: '日志', icon: <FileSearchOutlined /> },
+                        { key: 'auto-layout', label: '自动排列', icon: <DeploymentUnitOutlined /> },
+                        { key: 'reset-view', label: '重置视角', icon: <RetweetOutlined /> },
+                        { key: 'explain', label: '流程解释', icon: <NodeIndexOutlined /> },
+                      ].map((item) => {
+                        const isPanelItem = item.key === 'requests' || item.key === 'search' || item.key === 'logs' || item.key === 'explain';
+                        const isActive = isPanelItem && assistPanelOpen && activeAssistTab === item.key;
+
+                        return (
+                          <Tooltip key={item.key} title={item.label} placement="right">
+                            <Button
+                              type={isActive ? 'primary' : 'text'}
+                              className="!w-10 !h-10 !flex !items-center !justify-center"
+                              onClick={() => {
+                                if (item.key === 'auto-layout') {
+                                  handleAutoLayout();
+                                  return;
+                                }
+                                if (item.key === 'reset-view') {
+                                  handleResetView();
+                                  return;
+                                }
+                                if (assistPanelOpen && activeAssistTab === item.key) {
+                                  setAssistPanelOpen(false);
+                                  return;
+                                }
+                                setActiveAssistTab(item.key as 'requests' | 'search' | 'logs' | 'explain');
+                                setAssistPanelOpen(true);
+                              }}
+                              icon={item.icon}
+                            />
+                          </Tooltip>
+                        );
+                      })}
+                    </div>
+
+                    {assistPanelOpen ? (
+                      <div className="w-[340px] max-h-[min(720px,calc(100vh-220px))] bg-white/95 backdrop-blur border border-gray-200 rounded-2xl shadow-lg flex flex-col overflow-hidden">
+                        <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+                          <div className="font-medium text-gray-800">
+                            {{
+                              requests: '请求列表',
+                              search: '节点搜索',
+                              logs: '运行日志',
+                              explain: '流程解释',
+                            }[activeAssistTab]}
+                          </div>
+                          <Button type="text" size="small" icon={<BarsOutlined />} onClick={() => setAssistPanelOpen(false)} />
+                        </div>
+
+                        {activeAssistTab === 'requests' ? (
+                          <div className="flex-1 overflow-auto p-3 space-y-2">
+                            <div className="text-xs text-gray-500">
+                              拖拽请求到画布中可直接创建节点，也可以点击“添加”快速插入。
+                            </div>
+                            {availableRequests.map((request) => (
+                              <div
+                                key={`${request.ownerUserId || 'self'}:${request.id}`}
+                                draggable
+                                onDragStart={(event) => {
+                                  const requestKey = `${request.ownerUserId || 'self'}:${request.id}`;
+                                  event.dataTransfer.setData('application/workflow-request', requestKey);
+                                  event.dataTransfer.effectAllowed = 'copy';
+                                  setDraggingRequestKey(requestKey);
+                                }}
+                                onDragEnd={() => {
+                                  setDraggingRequestKey(null);
+                                  setDropPreview(null);
+                                }}
+                                className="border border-gray-200 rounded-xl p-3 bg-white hover:border-blue-300 hover:shadow-sm cursor-grab active:cursor-grabbing"
+                              >
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="min-w-0">
+                                    <div className="text-sm font-medium text-gray-800 truncate">{request.name}</div>
+                                    <div className="text-xs text-gray-500 truncate">{request.url || '未配置地址'}</div>
+                                  </div>
+                                  <Tag color="blue" className="m-0">{request.method}</Tag>
+                                </div>
+                                <div className="mt-2 flex items-center justify-between gap-2">
+                                  <div className="text-xs text-gray-500 truncate">
+                                    {request.isPublic && request.ownerUsername
+                                      ? `来源：${request.ownerUsername}（公开）`
+                                      : '来源：我的请求'}
+                                  </div>
+                                  <Button
+                                    size="small"
+                                    icon={<PlusOutlined />}
+                                    onClick={() => handleRequestSelect(`${request.ownerUserId || 'self'}:${request.id}`)}
+                                  >
+                                    添加
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                            {availableRequests.length === 0 ? (
+                              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无可用请求" />
+                            ) : null}
+                          </div>
+                        ) : null}
+
+                        {activeAssistTab === 'search' ? (
+                          <div className="flex-1 overflow-auto p-3 space-y-3">
+                            <Input
+                              allowClear
+                              placeholder="按节点名称搜索"
+                              prefix={<SearchOutlined className="text-gray-400" />}
+                              value={searchTerm}
+                              onChange={(event) => setSearchTerm(event.target.value)}
+                            />
+                            <div className="space-y-2">
+                              {filteredWorkflowRequests.map((request) => (
+                                <div
+                                  key={request.id}
+                                  onClick={() => focusNode(request.id)}
+                                  className={`border rounded-xl p-3 cursor-pointer transition-colors ${
+                                    selectedNodeId === request.id
+                                      ? 'border-blue-400 bg-blue-50'
+                                      : 'border-gray-200 bg-white hover:border-blue-300'
+                                  }`}
+                                >
+                                  <div className="flex items-center justify-between gap-2">
+                                    <div className="text-sm font-medium text-gray-800 truncate">{request.name}</div>
+                                    <Tag color="geekblue" className="m-0">{request.method}</Tag>
+                                  </div>
+                                  <div className="text-xs text-gray-500 truncate mt-1">{request.url || '未配置地址'}</div>
+                                </div>
+                              ))}
+                              {filteredWorkflowRequests.length === 0 ? (
+                                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有匹配的节点" />
+                              ) : null}
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {activeAssistTab === 'logs' ? (
+                          <div className="flex-1 overflow-auto p-3 space-y-2">
+                            {runLogs.map((log) => (
+                              <div
+                                key={log.id}
+                                onClick={() => openRunLogDetail(log)}
+                                className="border border-gray-200 rounded-xl p-3 bg-white hover:border-blue-300 cursor-pointer"
+                              >
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="text-sm font-medium text-gray-800">
+                                    {new Date(log.startedAt).toLocaleString()}
+                                  </div>
+                                  <Tag color={log.status === 'success' ? 'success' : 'error'} className="m-0">
+                                    {log.status === 'success' ? '成功' : '失败'}
+                                  </Tag>
+                                </div>
+                                <div className="text-xs text-gray-500 mt-1">
+                                  耗时 {getDurationText(log.durationMs)} · {log.nodes.length} 个节点
+                                </div>
+                              </div>
+                            ))}
+                            {runLogs.length === 0 ? (
+                              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无日志" />
+                            ) : null}
+                          </div>
+                        ) : null}
+
+                        {activeAssistTab === 'explain' ? (
+                          <div className="flex-1 overflow-auto p-4 space-y-4">
+                            <div className="space-y-2">
+                              {workflowExplanation.summary.map((item) => (
+                                <p key={item} className="text-sm text-gray-700 leading-6 m-0">
+                                  {item}
+                                </p>
+                              ))}
+                            </div>
+
+                            {workflowExplanation.warnings.length > 0 ? (
+                              <div className="flex flex-wrap gap-2">
+                                {workflowExplanation.warnings.map((warning) => (
+                                  <Tag key={warning} color="warning" className="m-0">{warning}</Tag>
+                                ))}
+                              </div>
+                            ) : null}
+
+                            <div className="space-y-2">
+                              {workflowExplanation.steps.map((step, index) => (
+                                <div
+                                  key={step.requestId}
+                                  onClick={() => focusNode(step.requestId)}
+                                  className={`rounded-2xl border p-3 cursor-pointer transition-colors ${
+                                    selectedNodeId === step.requestId
+                                      ? 'border-blue-400 bg-blue-50'
+                                      : 'border-gray-200 bg-white hover:border-blue-300'
+                                  }`}
+                                >
+                                  <div className="flex items-center justify-between gap-2 mb-2">
+                                    <div className="text-sm font-medium text-gray-800">
+                                      第 {index + 1} 步 · {step.requestName}
+                                    </div>
+                                    <Tag color="cyan" className="m-0">{step.method}</Tag>
+                                  </div>
+                                  <div className="text-xs text-gray-500 leading-5">
+                                    {step.description}
+                                  </div>
+                                </div>
+                              ))}
+                              {workflowExplanation.steps.length === 0 ? (
+                                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前没有可解释的执行链路" />
+                              ) : null}
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+
                   <WorkflowToolbar
                     view={view}
                     setView={setView}
                     canvasContainerRef={canvasContainerRef}
                     canvasSize={canvasSize}
-                    selectedWorkflow={selectedWorkflow}
-                    focusNode={focusNode}
                     clampOffset={clampOffset}
                   />
 
@@ -1568,6 +2089,22 @@ export const WorkflowPage: React.FC = () => {
                     onMouseLeave={handleCanvasMouseUp}
                     style={{ touchAction: 'none', cursor: spaceDown ? 'grab' : 'default' }}
                   />
+
+                  {draggingRequestKey && dropPreview ? (
+                    <div
+                      className="absolute z-20 pointer-events-none"
+                      style={{
+                        left: (dropPreview.x - view.offsetX) * view.scale,
+                        top: (dropPreview.y - view.offsetY) * view.scale,
+                        transform: 'translate(-50%, -50%)',
+                      }}
+                    >
+                      <div className="w-24 h-24 rounded-2xl border-2 border-dashed border-blue-400 bg-blue-100/60 flex items-center justify-center text-xs text-blue-700">
+                        放到这里
+                      </div>
+                    </div>
+                  ) : null}
+
                   {selectedWorkflow && selectedEdgeAction ? (
                     <Button
                       danger
@@ -1591,8 +2128,6 @@ export const WorkflowPage: React.FC = () => {
 
                 <WorkflowResultsPanel
                   results={results}
-                  workflows={workflows}
-                  selectedWorkflowId={selectedWorkflowId}
                   onSelectResult={setSelectedResult}
                   onDetailOpen={() => setDetailDrawerOpen(true)}
                   onImportOutputFields={handleImportOutputFields}
@@ -1634,10 +2169,10 @@ export const WorkflowPage: React.FC = () => {
           {selectedResult && (
             <div className="space-y-4">
               <div className="flex items-center justify-between gap-3">
-                <div className="text-lg font-semibold text-gray-800 truncate">{selectedResult.name}</div>
+                <div className="text-lg font-semibold text-gray-800 truncate">{selectedResult.requestName}</div>
                 <div className="flex items-center gap-3">
                   <div className="text-sm text-gray-500 whitespace-nowrap">
-                    状态码 {selectedResult.statusCode} · 耗时 {selectedResult.time ? `${selectedResult.time}ms` : '--'}
+                    状态码 {selectedResult.statusCode ?? '--'} · 耗时 {getDurationText(selectedResult.durationMs)}
                   </div>
                   {(() => {
                     const currentIndex = results.findIndex((r) => r.requestId === selectedResult.requestId);
@@ -1688,12 +2223,12 @@ export const WorkflowPage: React.FC = () => {
                 </pre>
               </div>
               <div>
-                <div className="text-sm font-semibold text-gray-700 mb-2">响应结果</div>
+                <div className="text-sm font-semibold text-gray-700 mb-2">实际入参</div>
                 <div className="border border-gray-200 rounded bg-white">
                   <Editor
-                    height="320px"
+                    height="180px"
                     defaultLanguage="json"
-                    value={formatResponseData(selectedResult.data)}
+                    value={formatResponseData(selectedResult.requestInfo?.resolvedInputs || {})}
                     theme="vs"
                     options={{
                       minimap: { enabled: false },
@@ -1706,33 +2241,147 @@ export const WorkflowPage: React.FC = () => {
                 </div>
               </div>
               <div>
-                <div className="text-sm font-semibold text-gray-700 mb-2">响应头</div>
-                <div className="border border-gray-200 rounded overflow-hidden">
-                  <table className="w-full text-sm">
-                    <thead className="bg-gray-50 text-gray-600">
-                      <tr>
-                        <th className="text-left px-3 py-2 w-1/2">Header</th>
-                        <th className="text-left px-3 py-2 w-1/2">Value</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {selectedResult.headers && Object.keys(selectedResult.headers).length > 0 ? (
-                        Object.entries(selectedResult.headers).map(([key, value]) => (
-                          <tr key={key} className="border-t border-gray-100">
-                            <td className="px-3 py-2 text-gray-700">{key}</td>
-                            <td className="px-3 py-2 text-gray-600 break-all">{String(value)}</td>
-                          </tr>
-                        ))
-                      ) : (
-                        <tr>
-                          <td className="px-3 py-3 text-gray-500" colSpan={2}>无响应头</td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
+                <div className="text-sm font-semibold text-gray-700 mb-2">响应结果</div>
+                <div className="border border-gray-200 rounded bg-white">
+                  <Editor
+                    height="320px"
+                    defaultLanguage="json"
+                    value={formatResponseData(selectedResult.responseData)}
+                    theme="vs"
+                    options={{
+                      minimap: { enabled: false },
+                      fontSize: 13,
+                      scrollBeyondLastLine: false,
+                      wordWrap: 'on',
+                      readOnly: true,
+                    }}
+                  />
                 </div>
               </div>
+              {selectedResult.error ? (
+                <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
+                  {selectedResult.error}
+                </div>
+              ) : null}
             </div>
+          )}
+        </Drawer>
+
+        <Drawer
+          open={runLogDrawerOpen}
+          onClose={() => setRunLogDrawerOpen(false)}
+          placement="right"
+          width={960}
+          title={selectedRunLog ? `${selectedRunLog.workflowName} · ${new Date(selectedRunLog.startedAt).toLocaleString()}` : '运行日志'}
+        >
+          {selectedRunLog ? (
+            <div className="h-full flex gap-4">
+              <div className="w-[260px] flex-shrink-0 border-r border-gray-100 pr-4 overflow-auto">
+                <div className="space-y-2">
+                  {selectedRunLog.nodes.map((node, index) => (
+                    <div
+                      key={node.requestId}
+                      onClick={() => setSelectedRunLogNodeId(node.requestId)}
+                      className={`rounded-xl border p-3 cursor-pointer ${
+                        selectedRunLogNodeId === node.requestId
+                          ? 'border-blue-400 bg-blue-50'
+                          : 'border-gray-200 hover:border-blue-300'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-sm font-medium text-gray-800 truncate">
+                          第 {index + 1} 步 · {node.requestName}
+                        </div>
+                        <Tag color={node.status === 'success' ? 'success' : 'error'} className="m-0">
+                          {node.status === 'success' ? '成功' : '失败'}
+                        </Tag>
+                      </div>
+                      <div className="text-xs text-gray-500 mt-1">
+                        状态码 {node.statusCode ?? '--'} · 耗时 {getDurationText(node.durationMs)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex-1 min-w-0 overflow-auto">
+                {selectedRunLogNode ? (
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-lg font-semibold text-gray-800">{selectedRunLogNode.requestName}</div>
+                        <div className="text-sm text-gray-500 mt-1">
+                          {selectedRunLogNode.method} {selectedRunLogNode.url || '--'}
+                        </div>
+                      </div>
+                      <div className="text-sm text-gray-500">
+                        状态码 {selectedRunLogNode.statusCode ?? '--'} · 耗时 {getDurationText(selectedRunLogNode.durationMs)}
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="text-sm font-semibold text-gray-700 mb-2">实际入参</div>
+                      <div className="border border-gray-200 rounded bg-white">
+                        <Editor
+                          height="180px"
+                          defaultLanguage="json"
+                          value={formatResponseData(selectedRunLogNode.requestInfo?.resolvedInputs || {})}
+                          theme="vs"
+                          options={{
+                            minimap: { enabled: false },
+                            fontSize: 13,
+                            scrollBeyondLastLine: false,
+                            wordWrap: 'on',
+                            readOnly: true,
+                          }}
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="text-sm font-semibold text-gray-700 mb-2">请求快照</div>
+                      <pre className="bg-gray-100 rounded p-3 text-xs whitespace-pre-wrap break-all">
+                        {buildCurl(
+                          selectedRunLogNode.requestInfo.url,
+                          selectedRunLogNode.requestInfo.method,
+                          selectedRunLogNode.requestInfo.params || {},
+                          selectedRunLogNode.requestInfo.body
+                        )}
+                      </pre>
+                    </div>
+
+                    <div>
+                      <div className="text-sm font-semibold text-gray-700 mb-2">响应快照</div>
+                      <div className="border border-gray-200 rounded bg-white">
+                        <Editor
+                          height="320px"
+                          defaultLanguage="json"
+                          value={formatResponseData(selectedRunLogNode.responseData)}
+                          theme="vs"
+                          options={{
+                            minimap: { enabled: false },
+                            fontSize: 13,
+                            scrollBeyondLastLine: false,
+                            wordWrap: 'on',
+                            readOnly: true,
+                          }}
+                        />
+                      </div>
+                    </div>
+
+                    {selectedRunLogNode.error ? (
+                      <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
+                        {selectedRunLogNode.error}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <Empty description="暂无节点详情" />
+                )}
+              </div>
+            </div>
+          ) : (
+            <Empty description="暂无日志详情" />
           )}
         </Drawer>
       </Content>

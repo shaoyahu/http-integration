@@ -6,17 +6,6 @@ interface WorkflowToolbarProps {
   setView: React.Dispatch<React.SetStateAction<{ scale: number; offsetX: number; offsetY: number }>>;
   canvasContainerRef: React.RefObject<HTMLDivElement | null>;
   canvasSize: { width: number; height: number };
-  selectedWorkflow: {
-    id: string;
-    name: string;
-    requests: Array<{
-      id: string;
-      name: string;
-      method: string;
-      iconUrl?: string;
-    }>;
-  } | null;
-  focusNode: (id: string) => void;
   clampOffset: (offset: number, viewSize: number, contentSize: number) => number;
 }
 
@@ -25,55 +14,30 @@ export const WorkflowToolbar: React.FC<WorkflowToolbarProps> = ({
   setView,
   canvasContainerRef,
   canvasSize,
-  selectedWorkflow,
-  focusNode,
   clampOffset,
 }) => {
+  const updateScale = (nextScale: number) => {
+    setView((prev) => {
+      const container = canvasContainerRef.current;
+      const viewWidth = container ? container.clientWidth / nextScale : canvasSize.width / nextScale;
+      const viewHeight = container ? container.clientHeight / nextScale : canvasSize.height / nextScale;
+
+      return {
+        scale: nextScale,
+        offsetX: clampOffset(prev.offsetX, viewWidth, canvasSize.width),
+        offsetY: clampOffset(prev.offsetY, viewHeight, canvasSize.height),
+      };
+    });
+  };
+
   return (
     <>
-      {/* Zoom controls */}
       <div className="absolute bottom-4 right-4 z-10 bg-white/90 backdrop-blur border border-gray-200 rounded-lg shadow-sm p-2 flex items-center gap-2">
-        <Button
-          size="small"
-          onClick={() => {
-            const nextScale = Math.min(2, view.scale * 1.1);
-            setView((prev) => {
-              const container = canvasContainerRef.current;
-              const viewWidth = container ? container.clientWidth / nextScale : canvasSize.width / nextScale;
-              const viewHeight = container ? container.clientHeight / nextScale : canvasSize.height / nextScale;
-              return {
-                scale: nextScale,
-                offsetX: clampOffset(prev.offsetX, viewWidth, canvasSize.width),
-                offsetY: clampOffset(prev.offsetY, viewHeight, canvasSize.height),
-              };
-            });
-          }}
-        >
+        <Button size="small" onClick={() => updateScale(Math.min(2, view.scale * 1.1))}>
           +
         </Button>
-        <Button
-          size="small"
-          onClick={() => {
-            const nextScale = Math.max(0.5, view.scale * 0.9);
-            setView((prev) => {
-              const container = canvasContainerRef.current;
-              const viewWidth = container ? container.clientWidth / nextScale : canvasSize.width / nextScale;
-              const viewHeight = container ? container.clientHeight / nextScale : canvasSize.height / nextScale;
-              return {
-                scale: nextScale,
-                offsetX: clampOffset(prev.offsetX, viewWidth, canvasSize.width),
-                offsetY: clampOffset(prev.offsetY, viewHeight, canvasSize.height),
-              };
-            });
-          }}
-        >
+        <Button size="small" onClick={() => updateScale(Math.max(0.5, view.scale * 0.9))}>
           -
-        </Button>
-        <Button
-          size="small"
-          onClick={() => setView({ scale: 1, offsetX: 0, offsetY: 0 })}
-        >
-          重置
         </Button>
         <span className="text-xs text-gray-500 w-12 text-right">{Math.round(view.scale * 100)}%</span>
       </div>

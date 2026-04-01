@@ -98,6 +98,43 @@ describe('WorkflowStore', () => {
       expect(workflow?.requests).toHaveLength(0);
     });
 
+    it('should remove related edges when deleting a request', () => {
+      const request1: Partial<WorkflowRequest> = {
+        id: 'request-1',
+        name: 'Request 1',
+        method: 'GET',
+        url: 'https://example.com/1',
+        headers: [],
+        params: [],
+        body: '',
+        inputFields: [],
+        outputFields: [],
+        inputValues: {},
+      };
+      const request2: Partial<WorkflowRequest> = {
+        id: 'request-2',
+        name: 'Request 2',
+        method: 'GET',
+        url: 'https://example.com/2',
+        headers: [],
+        params: [],
+        body: '',
+        inputFields: [],
+        outputFields: [],
+        inputValues: {},
+      };
+
+      store.getState().addRequestToWorkflow(workflowId, request1);
+      store.getState().addRequestToWorkflow(workflowId, request2);
+      store.getState().addEdge(workflowId, 'trigger', 'request-1');
+      store.getState().addEdge(workflowId, 'request-1', 'request-2');
+
+      store.getState().removeRequestFromWorkflow(workflowId, 'request-1');
+
+      const workflow = store.getState().workflows.find(w => w.id === workflowId);
+      expect(workflow?.edges).toHaveLength(0);
+    });
+
     it('should update input values', () => {
       const request: Partial<WorkflowRequest> = {
         id: 'test-request-1',

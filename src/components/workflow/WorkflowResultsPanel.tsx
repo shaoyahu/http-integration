@@ -1,40 +1,17 @@
 import React from 'react';
-import { List, Button, Tooltip, message } from 'antd';
+import { List, Button, Tooltip } from 'antd';
 import { ImportOutlined } from '@ant-design/icons';
-import { useWorkflowStore } from '../../store/workflowStore';
-import { HTTP_METHOD_COLORS } from '../../constants/http';
-
-interface ResultItem {
-  requestId: string;
-  name: string;
-  status: 'success' | 'error';
-  statusCode: number;
-  time: number;
-  data?: any;
-  headers?: Record<string, string>;
-  error?: string;
-}
+import type { WorkflowRunNodeLog } from '../../types/workflow';
 
 interface WorkflowResultsPanelProps {
-  results: ResultItem[];
-  workflows: Array<{
-    id: string;
-    requests: Array<{
-      id: string;
-      name: string;
-      method: string;
-    }>;
-  }>;
-  selectedWorkflowId: string | null;
-  onSelectResult: (result: ResultItem) => void;
+  results: WorkflowRunNodeLog[];
+  onSelectResult: (result: WorkflowRunNodeLog) => void;
   onDetailOpen: () => void;
-  onImportOutputFields: (result: ResultItem) => void;
+  onImportOutputFields: (result: WorkflowRunNodeLog) => void;
 }
 
 export const WorkflowResultsPanel: React.FC<WorkflowResultsPanelProps> = ({
   results,
-  workflows,
-  selectedWorkflowId,
   onSelectResult,
   onDetailOpen,
   onImportOutputFields,
@@ -46,7 +23,7 @@ export const WorkflowResultsPanel: React.FC<WorkflowResultsPanelProps> = ({
   return (
     <div className="absolute top-0 right-0 bottom-0 w-[340px] bg-white border-l border-gray-200 overflow-hidden flex flex-col">
       <div className="px-4 py-3 border-b border-gray-100 text-sm font-medium text-gray-700">
-        执行结果
+        当前运行
       </div>
       <div className="flex-1 overflow-auto">
         <List
@@ -60,8 +37,8 @@ export const WorkflowResultsPanel: React.FC<WorkflowResultsPanelProps> = ({
                   onDetailOpen();
                 }}
               >
-                <div className="flex items-center justify-between mb-2">
-                  <span className="font-medium">{result.name}</span>
+                <div className="flex items-center justify-between mb-2 gap-2">
+                  <span className="font-medium truncate">{result.requestName}</span>
                   <div className="flex items-center gap-2">
                     <span
                       className={`px-2 py-1 rounded text-xs font-medium ${
@@ -70,34 +47,36 @@ export const WorkflowResultsPanel: React.FC<WorkflowResultsPanelProps> = ({
                           : 'bg-red-100 text-red-500'
                       }`}
                     >
-                      {result.statusCode}
+                      {result.statusCode ?? '--'}
                     </span>
-                    {result.status === 'success' && (
+                    {result.status === 'success' ? (
                       <Tooltip title="从响应结果导入出参字段">
                         <Button
                           type="text"
                           size="small"
                           icon={<ImportOutlined />}
-                          onClick={(e) => {
-                            e.stopPropagation();
+                          onClick={(event) => {
+                            event.stopPropagation();
                             onImportOutputFields(result);
                           }}
                         >
                           导入出参
                         </Button>
                       </Tooltip>
-                    )}
+                    ) : null}
                   </div>
                 </div>
+
                 <div className="text-sm text-gray-500">
                   状态: {result.status === 'success' ? '成功' : '失败'}
-                  {result.time > 0 && ` · 耗时: ${result.time}ms`}
+                  {result.durationMs > 0 ? ` · 耗时: ${result.durationMs}ms` : ''}
                 </div>
-                {result.error && (
+
+                {result.error ? (
                   <div className="text-sm text-red-500 mt-1">
                     错误: {result.error}
                   </div>
-                )}
+                ) : null}
               </div>
             </List.Item>
           )}

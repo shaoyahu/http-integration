@@ -3,8 +3,15 @@ import { Layout } from 'antd';
 import axios from 'axios';
 import { Sidebar } from '../components/Sidebar';
 import { RequestEditor } from '../components/RequestEditor';
-import { fetchRequestState, saveRequestState } from '../api/http';
-import { useRequestStore } from '../store/requestStore';
+import {
+  deleteRequestItem,
+  fetchRequestState,
+  saveRequestItem,
+  saveRequestSelection,
+  saveRequestState,
+  type RequestStatePayload,
+} from '../api/http';
+import { useRequestStore, type HttpRequest, type RequestFolder } from '../store/requestStore';
 
 const { Content } = Layout;
 
@@ -28,82 +35,152 @@ const getErrorMessage = (error: unknown) => {
   return error instanceof Error ? error.message : String(error);
 };
 
+type RequestPersistRequest =
+  | { type: 'full'; snapshot: RequestStatePayload }
+  | { type: 'request'; snapshot: RequestStatePayload; request: HttpRequest }
+  | { type: 'delete'; snapshot: RequestStatePayload; requestId: string }
+  | { type: 'selection'; snapshot: RequestStatePayload };
+
+const buildRequestSnapshot = (state: {
+  requests: HttpRequest[];
+  folders: RequestFolder[];
+  selectedRequestId: string | null;
+}): RequestStatePayload => ({
+  requests: state.requests,
+  folders: state.folders,
+  selectedRequestId: state.selectedRequestId,
+});
+
+const serializeRequestSnapshot = (snapshot: RequestStatePayload) => JSON.stringify(snapshot);
+
+const buildRequestPersistRequest = (
+  previous: RequestStatePayload,
+  next: RequestStatePayload
+): RequestPersistRequest | null => {
+  if (serializeRequestSnapshot(previous) === serializeRequestSnapshot(next)) {
+    return null;
+  }
+
+  if (JSON.stringify(previous.folders) !== JSON.stringify(next.folders)) {
+    return { type: 'full', snapshot: next };
+  }
+
+  const prevIds = previous.requests.map((request) => request.id);
+  const nextIds = next.requests.map((request) => request.id);
+  const requestOrderChanged = prevIds.length === nextIds.length && prevIds.some((id, index) => id !== nextIds[index]);
+  const addedIds = nextIds.filter((id) => !prevIds.includes(id));
+  const removedIds = prevIds.filter((id) => !nextIds.includes(id));
+  const prevRequestMap = new Map(previous.requests.map((request) => [request.id, request]));
+  const nextRequestMap = new Map(next.requests.map((request) => [request.id, request]));
+  const changedCommonIds = nextIds
+    .filter((id) => prevRequestMap.has(id))
+    .filter((id) => JSON.stringify(prevRequestMap.get(id)) !== JSON.stringify(nextRequestMap.get(id)));
+
+  if (requestOrderChanged) {
+    return { type: 'full', snapshot: next };
+  }
+
+  if (addedIds.length === 0 && removedIds.length === 0) {
+    if (changedCommonIds.length === 0 && previous.selectedRequestId !== next.selectedRequestId) {
+      return { type: 'selection', snapshot: next };
+    }
+
+    if (changedCommonIds.length === 1) {
+      const request = nextRequestMap.get(changedCommonIds[0]);
+      if (request) {
+        return { type: 'request', snapshot: next, request };
+      }
+    }
+
+    return { type: 'full', snapshot: next };
+  }
+
+  if (addedIds.length === 1 && removedIds.length === 0 && changedCommonIds.length === 0) {
+    const request = nextRequestMap.get(addedIds[0]);
+    if (request) {
+      return { type: 'request', snapshot: next, request };
+    }
+  }
+
+  if (removedIds.length === 1 && addedIds.length === 0 && changedCommonIds.length === 0) {
+    return { type: 'delete', snapshot: next, requestId: removedIds[0] };
+  }
+
+  return { type: 'full', snapshot: next };
+};
+
 export const RequestPage: React.FC = () => {
   const setRequestsState = useRequestStore((state) => state.setRequestsState);
   const initializedRef = useRef(false);
   const lastSavedRef = useRef('');
+  const lastSavedSnapshotRef = useRef<RequestStatePayload>({
+    requests: [],
+    folders: [],
+    selectedRequestId: null,
+  });
   const saveTimerRef = useRef<number | null>(null);
-  const latestSaveRequestIdRef = useRef(0);
-  const saveInFlightRef = useRef(false);
-  const queuedPayloadRef = useRef<{
-    requests: ReturnType<typeof useRequestStore.getState>['requests'];
-    folders: ReturnType<typeof useRequestStore.getState>['folders'];
-    selectedRequestId: string | null
-  } | null>(null);
+  const savePromiseRef = useRef<Promise<void>>(Promise.resolve());
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+  const persistRequestState = useCallback((request: RequestPersistRequest) => {
+    const serialized = serializeRequestSnapshot(request.snapshot);
+    if (serialized === lastSavedRef.current) {
+      return Promise.resolve();
+    }
 
-  const persistRequestStateRef = useRef<
-    (payload: {
-      requests: ReturnType<typeof useRequestStore.getState>['requests'];
-      folders: ReturnType<typeof useRequestStore.getState>['folders'];
-      selectedRequestId: string | null
-    }) => Promise<void>
-  >();
-
-  if (!persistRequestStateRef.current) {
-    persistRequestStateRef.current = async (payload) => {
-      const serialized = JSON.stringify(payload);
-      if (serialized === lastSavedRef.current) {
-        return;
-      }
-      if (saveInFlightRef.current) {
-        queuedPayloadRef.current = payload;
-        return;
-      }
-
-      const requestId = latestSaveRequestIdRef.current + 1;
-      latestSaveRequestIdRef.current = requestId;
-      saveInFlightRef.current = true;
+    const persistTask = async () => {
       setIsSaving(true);
       setSaveError(null);
 
       try {
-        await saveRequestState(payload);
+        if (request.type === 'request') {
+          await saveRequestItem({
+            request: request.request,
+            selectedRequestId: request.snapshot.selectedRequestId,
+          });
+        } else if (request.type === 'delete') {
+          await deleteRequestItem(request.requestId, request.snapshot.selectedRequestId);
+        } else if (request.type === 'selection') {
+          await saveRequestSelection(request.snapshot.selectedRequestId);
+        } else {
+          await saveRequestState(request.snapshot);
+        }
+
         lastSavedRef.current = serialized;
+        lastSavedSnapshotRef.current = request.snapshot;
         setLastSavedAt(Date.now());
       } catch (error) {
         const details = getErrorMessage(error);
         setSaveError(details);
         throw new Error(details);
       } finally {
-        saveInFlightRef.current = false;
-        if (latestSaveRequestIdRef.current === requestId) {
-          setIsSaving(false);
-        }
-        if (queuedPayloadRef.current) {
-          const latestPayload = queuedPayloadRef.current;
-          queuedPayloadRef.current = null;
-          const latestSerialized = JSON.stringify(latestPayload);
-          if (latestSerialized !== lastSavedRef.current) {
-            await persistRequestStateRef.current?.(latestPayload);
-          }
-        }
+        setIsSaving(false);
       }
     };
-  }
 
-  const persistRequestState = persistRequestStateRef.current;
+    savePromiseRef.current = savePromiseRef.current
+      .catch(() => undefined)
+      .then(persistTask);
+
+    return savePromiseRef.current;
+  }, []);
 
   const persistRequestStateNow = useCallback(async () => {
-    const snapshot = useRequestStore.getState();
-    await persistRequestState({
-      requests: snapshot.requests,
-      folders: snapshot.folders,
-      selectedRequestId: snapshot.selectedRequestId,
-    });
+    if (saveTimerRef.current) {
+      window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+
+    const snapshot = buildRequestSnapshot(useRequestStore.getState());
+    const request = buildRequestPersistRequest(lastSavedSnapshotRef.current, snapshot);
+    if (!request) {
+      await savePromiseRef.current;
+      return;
+    }
+
+    await persistRequestState(request);
   }, [persistRequestState]);
 
   useEffect(() => {
@@ -126,12 +203,9 @@ export const RequestPage: React.FC = () => {
         if (cancelled) {
           return;
         }
-        const snapshot = useRequestStore.getState();
-        lastSavedRef.current = JSON.stringify({
-          requests: snapshot.requests,
-          folders: snapshot.folders,
-          selectedRequestId: snapshot.selectedRequestId,
-        });
+        const snapshot = buildRequestSnapshot(useRequestStore.getState());
+        lastSavedRef.current = serializeRequestSnapshot(snapshot);
+        lastSavedSnapshotRef.current = snapshot;
         initializedRef.current = true;
         setIsLoading(false);
       }
@@ -153,13 +227,13 @@ export const RequestPage: React.FC = () => {
         window.clearTimeout(saveTimerRef.current);
       }
       saveTimerRef.current = window.setTimeout(async () => {
-        const payload = {
-          requests: state.requests,
-          folders: state.folders,
-          selectedRequestId: state.selectedRequestId,
-        };
+        const snapshot = buildRequestSnapshot(state);
+        const request = buildRequestPersistRequest(lastSavedSnapshotRef.current, snapshot);
+        if (!request) {
+          return;
+        }
         try {
-          await persistRequestState(payload);
+          await persistRequestState(request);
         } catch (error) {
           const details = getErrorMessage(error);
           console.error('Failed to save requests state to DB:', details);

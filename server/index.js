@@ -6,7 +6,13 @@ import crypto from 'crypto';
 import { ObjectId } from 'mongodb';
 import 'dotenv/config';
 import { connectMongo, getDb, getMongoState, disconnectMongo } from './mongo.js';
-import { getSafeSelectedWorkflowId, normalizeWorkflow, normalizeWorkflowState } from './workflowState.js';
+import {
+  getSafeSelectedWorkflowId,
+  maskSensitiveHeaders,
+  normalizeWorkflow,
+  normalizeWorkflowRunLog,
+  normalizeWorkflowState,
+} from './workflowState.js';
 import { findBlockedResolvedAddress, isBlockedHostname } from './proxySecurity.js';
 
 const app = express();
@@ -32,6 +38,7 @@ app.get('/api/health', healthHandler);
 const REQUEST_STATE_COLLECTION = 'request_states';
 const REQUEST_STATE_DOC_ID = 'request_management_state';
 const WORKFLOW_STATE_COLLECTION = 'workflow_states';
+const WORKFLOW_RUN_LOG_COLLECTION = 'workflow_run_logs';
 const USERS_COLLECTION = 'users';
 const USER_IDENTITIES_COLLECTION = 'user_identities';
 const PERMISSION_POINTS_COLLECTION = 'permission_points';
@@ -450,6 +457,38 @@ const getDbOrReconnect = async () => {
   return await connectMongo();
 };
 
+const loadRequestStateForUser = async (db, userDocId) => {
+  const existing = await db.collection(REQUEST_STATE_COLLECTION).findOne({ _id: userDocId });
+  return {
+    existing,
+    state: normalizeRequestState(existing || {}),
+  };
+};
+
+const persistRequestStateForUser = async (db, userDocId, requests, folders, selectedRequestId) => {
+  const normalized = normalizeRequestState({
+    requests,
+    folders,
+    selectedRequestId,
+  });
+
+  await db.collection(REQUEST_STATE_COLLECTION).updateOne(
+    { _id: userDocId },
+    {
+      $set: {
+        ...normalized,
+        updatedAt: new Date(),
+      },
+      $setOnInsert: {
+        createdAt: new Date(),
+      },
+    },
+    { upsert: true }
+  );
+
+  return normalized;
+};
+
 const loadWorkflowStateForUser = async (db, userDocId) => {
   const existing = await db.collection(WORKFLOW_STATE_COLLECTION).findOne({ _id: userDocId });
   return {
@@ -480,6 +519,26 @@ const persistWorkflowStateForUser = async (db, userDocId, workflows, selectedWor
     selectedWorkflowId: safeSelectedWorkflowId,
   };
 };
+
+const serializeWorkflowRunLogDoc = (doc = {}) => normalizeWorkflowRunLog(
+  {
+    ...doc,
+    id: doc._id ? String(doc._id) : (typeof doc.id === 'string' ? doc.id : ''),
+    nodes: Array.isArray(doc.nodes)
+      ? doc.nodes.map((node) => ({
+        ...node,
+        requestInfo: {
+          ...(node?.requestInfo || {}),
+          headers: maskSensitiveHeaders(node?.requestInfo?.headers || {}),
+        },
+      }))
+      : [],
+  },
+  {
+    workflowId: typeof doc.workflowId === 'string' ? doc.workflowId : '',
+    workflowName: typeof doc.workflowName === 'string' ? doc.workflowName : '未命名工作流',
+  }
+);
 
 const mongoUnavailableResponse = () => {
   const mongo = getMongoState();
@@ -842,7 +901,7 @@ app.get('/api/requests-state', requireAuth, requireAnyPermission(USER_PERMISSION
   }
   try {
     const userDocId = getUserStateDocId(req);
-    const existing = await db.collection(REQUEST_STATE_COLLECTION).findOne({ _id: userDocId });
+    const { existing } = await loadRequestStateForUser(db, userDocId);
     if (!existing) {
       return res.json({ requests: [], folders: [], selectedRequestId: null });
     }
@@ -856,6 +915,122 @@ app.get('/api/requests-state', requireAuth, requireAnyPermission(USER_PERMISSION
   }
 });
 
+app.patch('/api/requests-state/selection', requireAuth, requireAnyPermission(USER_PERMISSION.REQUEST_MANAGEMENT), async (req, res) => {
+  const db = await getDbOrReconnect();
+  if (!db) {
+    return res.status(503).json(mongoUnavailableResponse());
+  }
+  try {
+    const userDocId = getUserStateDocId(req);
+    const { state } = await loadRequestStateForUser(db, userDocId);
+    const selectedRequestId = typeof req.body?.selectedRequestId === 'string' ? req.body.selectedRequestId : null;
+    const nextState = await persistRequestStateForUser(
+      db,
+      userDocId,
+      state.requests,
+      state.folders,
+      selectedRequestId
+    );
+    return res.json({ ok: true, selectedRequestId: nextState.selectedRequestId });
+  } catch (error) {
+    return res.status(500).json({
+      error: 'Failed to save request selection',
+      details: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+app.put('/api/requests-state/:requestId', requireAuth, requireAnyPermission(USER_PERMISSION.REQUEST_MANAGEMENT), async (req, res) => {
+  const db = await getDbOrReconnect();
+  if (!db) {
+    return res.status(503).json(mongoUnavailableResponse());
+  }
+  try {
+    const requestId = typeof req.params.requestId === 'string' ? req.params.requestId.trim() : '';
+    if (!requestId) {
+      return res.status(400).json({ error: 'requestId is required', code: 'REQUEST_ID_REQUIRED' });
+    }
+
+    const incomingRequest = req.body?.request;
+    if (!incomingRequest || typeof incomingRequest !== 'object') {
+      return res.status(400).json({ error: 'request is required', code: 'REQUEST_REQUIRED' });
+    }
+
+    const userDocId = getUserStateDocId(req);
+    const { state } = await loadRequestStateForUser(db, userDocId);
+    const existingRequest = state.requests.find((request) => request.id === requestId);
+    const normalizedRequest = normalizeRequest(
+      {
+        ...incomingRequest,
+        id: requestId,
+        folderId: incomingRequest.folderId,
+      },
+      state.requests.length
+    );
+    const hasFolder = normalizedRequest.folderId && state.folders.some((folder) => folder.id === normalizedRequest.folderId);
+    const nextRequest = {
+      ...normalizedRequest,
+      folderId: hasFolder ? normalizedRequest.folderId : null,
+      isPublic: existingRequest?.isPublic ?? normalizedRequest.isPublic,
+    };
+
+    const nextRequests = existingRequest
+      ? state.requests.map((request) => (request.id === requestId ? nextRequest : request))
+      : [...state.requests, nextRequest];
+
+    const selectedRequestId = typeof req.body?.selectedRequestId === 'string'
+      ? req.body.selectedRequestId
+      : state.selectedRequestId;
+
+    const nextState = await persistRequestStateForUser(
+      db,
+      userDocId,
+      nextRequests,
+      state.folders,
+      selectedRequestId
+    );
+    return res.json({ ok: true, requestId, count: nextState.requests.length });
+  } catch (error) {
+    return res.status(500).json({
+      error: 'Failed to save request item',
+      details: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+app.delete('/api/requests-state/:requestId', requireAuth, requireAnyPermission(USER_PERMISSION.REQUEST_MANAGEMENT), async (req, res) => {
+  const db = await getDbOrReconnect();
+  if (!db) {
+    return res.status(503).json(mongoUnavailableResponse());
+  }
+  try {
+    const requestId = typeof req.params.requestId === 'string' ? req.params.requestId.trim() : '';
+    if (!requestId) {
+      return res.status(400).json({ error: 'requestId is required', code: 'REQUEST_ID_REQUIRED' });
+    }
+
+    const userDocId = getUserStateDocId(req);
+    const { state } = await loadRequestStateForUser(db, userDocId);
+    const nextRequests = state.requests.filter((request) => request.id !== requestId);
+    const selectedRequestId = typeof req.body?.selectedRequestId === 'string'
+      ? req.body.selectedRequestId
+      : state.selectedRequestId;
+    const nextState = await persistRequestStateForUser(
+      db,
+      userDocId,
+      nextRequests,
+      state.folders,
+      selectedRequestId
+    );
+    return res.json({ ok: true, requestId, count: nextState.requests.length });
+  } catch (error) {
+    return res.status(500).json({
+      error: 'Failed to delete request item',
+      details: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
 app.put('/api/requests-state', requireAuth, requireAnyPermission(USER_PERMISSION.REQUEST_MANAGEMENT), async (req, res) => {
   const db = await getDbOrReconnect();
   if (!db) {
@@ -864,18 +1039,12 @@ app.put('/api/requests-state', requireAuth, requireAnyPermission(USER_PERMISSION
   try {
     const normalized = normalizeRequestState(req.body || {});
     const userDocId = getUserStateDocId(req);
-    await db.collection(REQUEST_STATE_COLLECTION).updateOne(
-      { _id: userDocId },
-      {
-        $set: {
-          ...normalized,
-          updatedAt: new Date(),
-        },
-        $setOnInsert: {
-          createdAt: new Date(),
-        },
-      },
-      { upsert: true }
+    await persistRequestStateForUser(
+      db,
+      userDocId,
+      normalized.requests,
+      normalized.folders,
+      normalized.selectedRequestId
     );
     res.json({ ok: true, count: normalized.requests.length });
   } catch (error) {
@@ -1076,6 +1245,92 @@ app.put('/api/workflows-state', requireAuth, requireAnyPermission(USER_PERMISSIO
   } catch (error) {
     return res.status(500).json({
       error: 'Failed to save workflow state',
+      details: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+app.get('/api/workflows-state/:workflowId/logs', requireAuth, requireAnyPermission(USER_PERMISSION.WORKFLOW_MANAGEMENT), async (req, res) => {
+  const db = await getDbOrReconnect();
+  if (!db) {
+    return res.status(503).json(mongoUnavailableResponse());
+  }
+  try {
+    const workflowId = typeof req.params.workflowId === 'string' ? req.params.workflowId.trim() : '';
+    if (!workflowId) {
+      return res.status(400).json({ error: 'workflowId is required', code: 'WORKFLOW_ID_REQUIRED' });
+    }
+
+    const userDocId = getUserStateDocId(req);
+    const docs = await db.collection(WORKFLOW_RUN_LOG_COLLECTION)
+      .find({ userId: userDocId, workflowId })
+      .sort({ startedAt: -1, _id: -1 })
+      .limit(50)
+      .toArray();
+
+    return res.json({
+      logs: docs.map((doc) => serializeWorkflowRunLogDoc(doc)),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      error: 'Failed to load workflow run logs',
+      details: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+app.post('/api/workflows-state/:workflowId/logs', requireAuth, requireAnyPermission(USER_PERMISSION.WORKFLOW_MANAGEMENT), async (req, res) => {
+  const db = await getDbOrReconnect();
+  if (!db) {
+    return res.status(503).json(mongoUnavailableResponse());
+  }
+  try {
+    const workflowId = typeof req.params.workflowId === 'string' ? req.params.workflowId.trim() : '';
+    if (!workflowId) {
+      return res.status(400).json({ error: 'workflowId is required', code: 'WORKFLOW_ID_REQUIRED' });
+    }
+
+    const userDocId = getUserStateDocId(req);
+    const normalizedLog = normalizeWorkflowRunLog(
+      {
+        ...req.body,
+        workflowId,
+      },
+      {
+        workflowId,
+        workflowName: typeof req.body?.workflowName === 'string' ? req.body.workflowName : '未命名工作流',
+      }
+    );
+
+    const doc = {
+      userId: userDocId,
+      workflowId,
+      workflowName: normalizedLog.workflowName,
+      status: normalizedLog.status,
+      startedAt: normalizedLog.startedAt,
+      finishedAt: normalizedLog.finishedAt,
+      durationMs: normalizedLog.durationMs,
+      nodes: normalizedLog.nodes.map((node) => ({
+        ...node,
+        requestInfo: {
+          ...node.requestInfo,
+          headers: maskSensitiveHeaders(node.requestInfo?.headers || {}),
+        },
+      })),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    const result = await db.collection(WORKFLOW_RUN_LOG_COLLECTION).insertOne(doc);
+    return res.status(201).json({
+      log: serializeWorkflowRunLogDoc({
+        ...doc,
+        _id: result.insertedId,
+      }),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      error: 'Failed to save workflow run log',
       details: error instanceof Error ? error.message : String(error),
     });
   }

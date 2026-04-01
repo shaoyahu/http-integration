@@ -1,6 +1,7 @@
 import axios from 'axios';
 import type { HttpRequest, RequestFolder } from '../store/requestStore';
 import type { Workflow } from '../store/workflowStore';
+import type { WorkflowRunLog, WorkflowRunNodeLog } from '../types/workflow';
 
 const API_BASE_URL = '/api';
 
@@ -64,6 +65,11 @@ export interface RequestStatePayload {
   selectedRequestId: string | null;
 }
 
+export interface RequestItemPayload {
+  request: HttpRequest;
+  selectedRequestId: string | null;
+}
+
 export interface WorkflowStatePayload {
   workflows: Workflow[];
   selectedWorkflowId: string | null;
@@ -89,6 +95,55 @@ export interface AdminStatsPayload {
   };
 }
 
+export type WorkflowRunLogPayload = Omit<WorkflowRunLog, 'id'>;
+
+const normalizeStringMap = (value: unknown): Record<string, string> => (
+  value && typeof value === 'object'
+    ? Object.entries(value as Record<string, unknown>).reduce<Record<string, string>>((acc, [key, item]) => {
+      acc[key] = String(item);
+      return acc;
+    }, {})
+    : {}
+);
+
+const normalizeWorkflowRunNodeLog = (node: any): WorkflowRunNodeLog => ({
+  requestId: typeof node?.requestId === 'string' ? node.requestId : '',
+  requestName: typeof node?.requestName === 'string' ? node.requestName : '未命名节点',
+  method: typeof node?.method === 'string' ? node.method : 'GET',
+  url: typeof node?.url === 'string' ? node.url : '',
+  status: node?.status === 'error' ? 'error' : 'success',
+  statusCode: typeof node?.statusCode === 'number' ? node.statusCode : null,
+  durationMs: typeof node?.durationMs === 'number' ? node.durationMs : 0,
+  startedAt: typeof node?.startedAt === 'string' ? node.startedAt : new Date().toISOString(),
+  finishedAt: typeof node?.finishedAt === 'string' ? node.finishedAt : new Date().toISOString(),
+  upstreamRequestIds: Array.isArray(node?.upstreamRequestIds)
+    ? node.upstreamRequestIds.filter((requestId: unknown) => typeof requestId === 'string')
+    : [],
+  requestInfo: {
+    url: typeof node?.requestInfo?.url === 'string' ? node.requestInfo.url : (typeof node?.url === 'string' ? node.url : ''),
+    method: typeof node?.requestInfo?.method === 'string' ? node.requestInfo.method : (typeof node?.method === 'string' ? node.method : 'GET'),
+    headers: normalizeStringMap(node?.requestInfo?.headers),
+    params: normalizeStringMap(node?.requestInfo?.params),
+    body: node?.requestInfo?.body,
+    resolvedInputs: node?.requestInfo?.resolvedInputs && typeof node.requestInfo.resolvedInputs === 'object'
+      ? node.requestInfo.resolvedInputs
+      : {},
+  },
+  responseData: node?.responseData,
+  error: typeof node?.error === 'string' ? node.error : undefined,
+});
+
+const normalizeWorkflowRunLog = (log: any): WorkflowRunLog => ({
+  id: typeof log?.id === 'string' ? log.id : '',
+  workflowId: typeof log?.workflowId === 'string' ? log.workflowId : '',
+  workflowName: typeof log?.workflowName === 'string' ? log.workflowName : '未命名工作流',
+  status: log?.status === 'error' ? 'error' : 'success',
+  startedAt: typeof log?.startedAt === 'string' ? log.startedAt : new Date().toISOString(),
+  finishedAt: typeof log?.finishedAt === 'string' ? log.finishedAt : new Date().toISOString(),
+  durationMs: typeof log?.durationMs === 'number' ? log.durationMs : 0,
+  nodes: Array.isArray(log?.nodes) ? log.nodes.map(normalizeWorkflowRunNodeLog) : [],
+});
+
 export const fetchRequestState = async (): Promise<RequestStatePayload> => {
   const response = await api.get('/requests-state');
   const data = response.data || {};
@@ -101,6 +156,23 @@ export const fetchRequestState = async (): Promise<RequestStatePayload> => {
 
 export const saveRequestState = async (payload: RequestStatePayload) => {
   const response = await api.put('/requests-state', payload);
+  return response.data;
+};
+
+export const saveRequestItem = async (payload: RequestItemPayload) => {
+  const response = await api.put(`/requests-state/${payload.request.id}`, payload);
+  return response.data;
+};
+
+export const deleteRequestItem = async (requestId: string, selectedRequestId: string | null) => {
+  const response = await api.delete(`/requests-state/${requestId}`, {
+    data: { selectedRequestId },
+  });
+  return response.data;
+};
+
+export const saveRequestSelection = async (selectedRequestId: string | null) => {
+  const response = await api.patch('/requests-state/selection', { selectedRequestId });
   return response.data;
 };
 
@@ -139,6 +211,17 @@ export const fetchWorkflowAvailableRequests = async (): Promise<WorkflowAvailabl
   const response = await api.get('/workflow-requests');
   const data = response.data || {};
   return Array.isArray(data.requests) ? data.requests : [];
+};
+
+export const fetchWorkflowRunLogs = async (workflowId: string): Promise<WorkflowRunLog[]> => {
+  const response = await api.get(`/workflows-state/${workflowId}/logs`);
+  const data = response.data || {};
+  return Array.isArray(data.logs) ? data.logs.map(normalizeWorkflowRunLog) : [];
+};
+
+export const saveWorkflowRunLog = async (workflowId: string, payload: WorkflowRunLogPayload): Promise<WorkflowRunLog> => {
+  const response = await api.post(`/workflows-state/${workflowId}/logs`, payload);
+  return normalizeWorkflowRunLog(response.data?.log || {});
 };
 
 export const fetchAdminStats = async (): Promise<AdminStatsPayload> => {
