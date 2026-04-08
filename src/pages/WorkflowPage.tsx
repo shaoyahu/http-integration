@@ -10,6 +10,7 @@ import {
   SearchOutlined,
   FileSearchOutlined,
   ApiOutlined,
+  CloseOutlined,
   BarsOutlined,
   PlusOutlined,
   DeploymentUnitOutlined,
@@ -43,6 +44,7 @@ import {
   autoLayoutWorkflowNodes,
   buildWorkflowExplanation,
   getDefaultRunLogNodeId,
+  getNestedValue,
   getViewportForBounds,
   getWorkflowLayoutBounds,
   maskSensitiveHeaders,
@@ -199,6 +201,82 @@ const buildWorkflowPersistRequest = (
   return { type: 'full', snapshot: next };
 };
 
+const MIN_NODE_GAP = 20;
+
+const rectsOverlap = (
+  ax: number, ay: number, aw: number, ah: number,
+  bx: number, by: number, bw: number, bh: number,
+  gap: number, horizontalGap: number
+): boolean => !(ax + aw + gap <= bx || bx + bw + gap <= ax || ay + ah + gap <= by || by + bh + gap <= ay);
+
+const pushOutOfCollision = (
+  draggedId: string,
+  x: number, y: number,
+  others: Record<string, { x: number; y: number }>,
+  size: number, gap: number,
+  canvasWidth?: number, canvasHeight?: number
+): { x: number; y: number } => {
+  let nx = x, ny = y;
+  let iterations = 0;
+  const maxIterations = 20;
+  const hGap = gap * 3;
+
+  do {
+    let pushed = false;
+
+    for (const [id, p] of Object.entries(others)) {
+      if (id === draggedId) continue;
+      if (!rectsOverlap(nx, ny, size, size, p.x, p.y, size, size, gap, hGap)) continue;
+
+      const leftEdge = p.x;
+      const rightEdge = p.x + size;
+      const topEdge = p.y;
+      const bottomEdge = p.y + size;
+
+      const myRight = nx + size;
+      const myBottom = ny + size;
+
+      let moveX = 0, moveY = 0;
+
+      if (myRight + hGap <= leftEdge) {
+        moveX = leftEdge - myRight - hGap;
+      } else if (nx >= rightEdge + hGap) {
+        moveX = -(nx - rightEdge - hGap);
+      } else if (myBottom + gap <= topEdge) {
+        moveY = topEdge - myBottom - gap;
+      } else if (ny >= bottomEdge + gap) {
+        moveY = -(ny - bottomEdge - gap);
+      } else {
+        const overlapLeft = myRight + hGap - leftEdge;
+        const overlapRight = rightEdge + hGap - nx;
+        const overlapTop = myBottom + gap - topEdge;
+        const overlapBottom = bottomEdge + gap - ny;
+        const minOverlap = Math.min(overlapLeft, overlapRight, overlapTop, overlapBottom);
+
+        if (minOverlap === overlapLeft || minOverlap === overlapRight) {
+          moveX = minOverlap === overlapLeft ? -overlapLeft : overlapRight;
+        } else {
+          moveY = minOverlap === overlapTop ? -overlapTop : overlapBottom;
+        }
+      }
+
+      if (moveX !== 0 || moveY !== 0) {
+        nx += moveX;
+        ny += moveY;
+        pushed = true;
+      }
+    }
+
+    iterations++;
+    if (!pushed) break;
+  } while (iterations < maxIterations);
+
+  const boundedX = Math.min(nx, (canvasWidth || Infinity) - size);
+  const boundedY = Math.min(ny, (canvasHeight || Infinity) - size);
+
+  return { x: Math.max(0, boundedX), y: Math.max(0, boundedY) };
+};
+
 export const WorkflowPage: React.FC = () => {
   const {
     workflows,
@@ -273,8 +351,8 @@ export const WorkflowPage: React.FC = () => {
   const selectedWorkflow = workflows.find((wf) => wf.id === selectedWorkflowId);
   const lastUpdated = selectedWorkflow?.updatedAt || selectedWorkflow?.createdAt;
   const triggerPos = React.useMemo(
-    () => ({ x: canvasSize.width / 2 - TRIGGER_WIDTH / 2, y: 12 }),
-    [canvasSize]
+    () => ({ x: canvasSize.width / 2 - TRIGGER_WIDTH / 2, y: WORKFLOW_VIEW_TOP_INSET + 20 }),
+    [canvasSize, WORKFLOW_VIEW_TOP_INSET]
   );
   const currentSnapshot = React.useMemo(
     () => buildWorkflowSnapshot({ workflows, selectedWorkflowId }),
@@ -683,7 +761,13 @@ export const WorkflowPage: React.FC = () => {
 
             let processedValue: unknown = value;
             if (reference) {
-              processedValue = requestOutputMap.get(reference.requestId)?.[reference.fieldName];
+              const upstreamOutput = requestOutputMap.get(reference.requestId);
+              if (upstreamOutput === undefined) {
+                console.warn(`警告: 引用 {{${reference.requestId}.${reference.fieldName}}} 指向的请求尚未执行或不存在`);
+              } else if (getNestedValue(upstreamOutput, reference.fieldName) === undefined) {
+                console.warn(`警告: 引用 {{${reference.requestId}.${reference.fieldName}}} 指向的字段不存在于上游响应中`);
+              }
+              processedValue = getNestedValue(upstreamOutput, reference.fieldName);
             }
 
             if ((processedValue === undefined || processedValue === '') && field.required) {
@@ -840,7 +924,9 @@ export const WorkflowPage: React.FC = () => {
         setActiveAssistTab('logs');
         setAssistPanelOpen(true);
       } catch (error) {
-        console.error('Failed to save workflow run log:', getErrorMessage(error));
+        const errorMsg = getErrorMessage(error);
+        console.error('Failed to save workflow run log:', errorMsg);
+        message.error(`运行日志保存失败: ${errorMsg}`);
       }
 
       if (workflowResults.length === 0) {
@@ -919,15 +1005,19 @@ export const WorkflowPage: React.FC = () => {
     if (edge.sourceId === 'trigger') {
       start = { x: triggerPos.x + TRIGGER_WIDTH / 2, y: triggerPos.y + TRIGGER_HEIGHT };
     } else {
-      const sourceNodePos = nodePositionsRef.current[edge.sourceId];
+      const sourceNodePos = nodePositions[edge.sourceId] ?? nodePositionsRef.current[edge.sourceId];
       if (sourceNodePos) {
-        start = { x: sourceNodePos.x + NODE_WIDTH / 2, y: sourceNodePos.y + NODE_HEIGHT };
+        start = { x: sourceNodePos.x + NODE_SIZE / 2, y: sourceNodePos.y + NODE_SIZE };
+      } else {
+        console.warn(`Edge rendering: source node position not found for ${edge.sourceId}`);
       }
     }
 
-    const targetNodePos = nodePositionsRef.current[edge.targetId];
+    const targetNodePos = nodePositions[edge.targetId] ?? nodePositionsRef.current[edge.targetId];
     if (targetNodePos) {
-      end = { x: targetNodePos.x + NODE_WIDTH / 2, y: targetNodePos.y };
+      end = { x: targetNodePos.x + NODE_SIZE / 2, y: targetNodePos.y };
+    } else {
+      console.warn(`Edge rendering: target node position not found for ${edge.targetId}`);
     }
 
     if (!start || !end) {
@@ -1181,11 +1271,11 @@ export const WorkflowPage: React.FC = () => {
   }, [canvasSize.width, fitViewToPositions, selectedWorkflow, triggerPos, updateWorkflow]);
 
   const handleResetView = useCallback(() => {
-    if (Object.keys(nodePositionsRef.current).length > 0) {
-      fitViewToPositions(nodePositionsRef.current);
+    if (Object.keys(nodePositionsRef.current).length === 0) {
+      fitViewToPositions({});
       return;
     }
-    setView({ scale: 1, offsetX: 0, offsetY: -WORKFLOW_VIEW_TOP_INSET });
+    fitViewToPositions(nodePositionsRef.current);
   }, [fitViewToPositions]);
 
   React.useEffect(() => {
@@ -1325,14 +1415,12 @@ export const WorkflowPage: React.FC = () => {
       const id = dragRef.current.id;
       const newX = x - dragRef.current.offsetX;
       const newY = y - dragRef.current.offsetY;
-      const clampedX = Math.max(0, newX);
-      const clampedY = Math.max(0, newY);
       if (Math.abs(x - dragRef.current.startX) > 4 || Math.abs(y - dragRef.current.startY) > 4) {
         dragRef.current.moved = true;
       }
       setNodePositions((prev) => ({
         ...prev,
-        [id]: { x: clampedX, y: clampedY },
+        [id]: { x: Math.max(0, newX), y: Math.max(0, newY) },
       }));
     }
   };
@@ -1366,9 +1454,13 @@ export const WorkflowPage: React.FC = () => {
         setSelectedNodeId(dragId);
         setSelectedEdgeId(null);
       } else {
-        const current = nodePositionsRef.current[dragId];
-        if (current) {
-          updateWorkflow(selectedWorkflow.id, { nodePositions: { ...nodePositionsRef.current } });
+        const finalPos = nodePositions[dragId];
+        if (finalPos) {
+          const others = Object.fromEntries(Object.entries(nodePositions).filter(([key]) => key !== dragId));
+          const { x, y } = pushOutOfCollision(dragId, finalPos.x, finalPos.y, others, NODE_SIZE, MIN_NODE_GAP, canvasSize.width, canvasSize.height);
+          const newPositions = { ...nodePositions, [dragId]: { x, y } };
+          setNodePositions(newPositions);
+          updateWorkflow(selectedWorkflow.id, { nodePositions: newPositions });
         }
       }
     }
@@ -1527,14 +1619,21 @@ export const WorkflowPage: React.FC = () => {
       lineWidth: number = 2,
       dashed: boolean = true
     ) => {
-      const { cp1, cp2 } = getEdgeCurvePoints(start, end);
       ctx.strokeStyle = color;
       ctx.lineWidth = lineWidth / scale;
       ctx.lineCap = 'round';
       ctx.setLineDash(dashed ? [6 / scale, 6 / scale] : []);
       ctx.beginPath();
       ctx.moveTo(start.x, start.y);
-      ctx.bezierCurveTo(cp1.x, cp1.y, cp2.x, cp2.y, end.x, end.y);
+
+      const isNearlyVertical = Math.abs(start.x - end.x) < 5 / scale;
+      if (isNearlyVertical) {
+        ctx.lineTo(end.x, end.y);
+      } else {
+        const { cp1, cp2 } = getEdgeCurvePoints(start, end);
+        ctx.bezierCurveTo(cp1.x, cp1.y, cp2.x, cp2.y, end.x, end.y);
+      }
+
       ctx.stroke();
       ctx.setLineDash([]);
     };
@@ -1630,6 +1729,13 @@ export const WorkflowPage: React.FC = () => {
           const iconSize = 44 / view.scale;
           ctx.drawImage(img, centerX - iconSize / 2, centerY - iconSize / 2, iconSize, iconSize);
         } else {
+          img.onload = () => {
+            const iconSize = 44 / view.scale;
+            ctx.drawImage(img, centerX - iconSize / 2, centerY - iconSize / 2, iconSize, iconSize);
+          };
+          img.onerror = () => {
+            drawDefaultIcon(centerX, centerY, view.scale);
+          };
           drawDefaultIcon(centerX, centerY, view.scale);
         }
       } else {
@@ -1906,7 +2012,7 @@ export const WorkflowPage: React.FC = () => {
                               explain: '流程解释',
                             }[activeAssistTab]}
                           </div>
-                          <Button type="text" size="small" icon={<BarsOutlined />} onClick={() => setAssistPanelOpen(false)} />
+                          <Button type="text" size="small" icon={<CloseOutlined />} onClick={() => setAssistPanelOpen(false)} />
                         </div>
 
                         {activeAssistTab === 'requests' ? (
@@ -2164,7 +2270,12 @@ export const WorkflowPage: React.FC = () => {
           onClose={() => setDetailDrawerOpen(false)}
           placement="right"
           width={720}
-          title={null}
+          extra={<Button type="text" size="small" icon={<CloseOutlined />} onClick={() => setDetailDrawerOpen(false)} />}
+          styles={{
+            body: { padding: 0 },
+            wrapper: { top: 64, height: 'calc(100vh - 88px)' },
+          }}
+          className="[&_.ant-drawer-content]:bg-white/95 [&_.ant-drawer-content]:backdrop-blur [&_.ant-drawer-content]:border [&_.ant-drawer-content]:border-gray-200 [&_.ant-drawer-content]:rounded-2xl [&_.ant-drawer-content]:shadow-lg"
         >
           {selectedResult && (
             <div className="space-y-4">
