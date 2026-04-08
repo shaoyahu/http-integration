@@ -88,7 +88,7 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
   updateWorkflow: (id, updates) =>
     set((state) => ({
       workflows: state.workflows.map((wf) =>
-        wf.id === id ? { ...wf, ...updates, updatedAt: updates.updatedAt || Date.now() } : wf
+        wf.id === id ? { ...wf, ...updates, updatedAt: updates.updatedAt ?? Date.now() } : wf
       ),
     })),
   deleteWorkflow: (id) =>
@@ -168,9 +168,18 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
           const currentPath = path ? `${path}.${key}` : key;
 
           if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+            // Also add the object itself as a valid output field (not just leaf nodes)
+            if (!visitedPaths.has(currentPath)) {
+              outputFields.push({
+                name: key,
+                path: currentPath,
+                description: `从响应中提取的参数: ${currentPath}`,
+              });
+              visitedPaths.add(currentPath);
+            }
             traverse(value, currentPath);
           } else if (typeof value !== 'object' || value === null) {
-            // Only add fields that are not objects or arrays
+            // Leaf nodes (primitives and array elements)
             if (!visitedPaths.has(currentPath)) {
               outputFields.push({
                 name: key,
@@ -219,7 +228,8 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
       if (requestIndex === -1) return state;
 
       const originalRequest = workflow.requests[requestIndex];
-      newId = Date.now().toString();
+      // Use unique ID with timestamp + random + counter to avoid collisions
+      newId = `dup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const duplicatedRequest: WorkflowRequest = {
         ...originalRequest,
         id: newId,
@@ -254,13 +264,15 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
     set((state) => {
       const workflow = state.workflows.find((wf) => wf.id === workflowId);
       if (!workflow) return state;
-      
+
       const edges = workflow.edges || [];
+      // Check for duplicate edge in both directions
       const existingEdge = edges.find(
-        (e) => e.sourceId === sourceId && e.targetId === targetId
+        (e) => (e.sourceId === sourceId && e.targetId === targetId) ||
+               (e.sourceId === targetId && e.targetId === sourceId)
       );
       if (existingEdge) return state;
-      
+
       const newEdge: WorkflowEdge = {
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         sourceId,

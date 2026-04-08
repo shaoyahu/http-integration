@@ -67,8 +67,7 @@ export const RouteSidebar: React.FC = () => {
   const userInitial = (displayName || 'U').slice(0, 1).toUpperCase();
   const hasAdminPanelPermission = permissions.includes(USER_PERMISSIONS.ADMIN_PANEL);
   const canAccessAdmin = user?.role === USER_ROLES.ADMIN
-    || hasAdminPanelPermission
-    || (typeof user?.username === 'string' && user.username.trim().toLowerCase() === 'admin');
+    || hasAdminPanelPermission;
   const switchLabel = isAdminRoute ? '开发平台' : '管理后台';
   const switchPath = isAdminRoute ? getDefaultPlatformPath(user) : '/admin';
 

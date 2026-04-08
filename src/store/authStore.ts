@@ -35,8 +35,7 @@ interface AuthState {
 export const isAdminUser = (user: AuthUser): boolean => {
   return (
     user.role === USER_ROLES.ADMIN ||
-    user.permissions?.includes(USER_PERMISSIONS.ADMIN_PANEL) ||
-    (typeof user.username === 'string' && user.username.trim().toLowerCase() === 'admin')
+    user.permissions?.includes(USER_PERMISSIONS.ADMIN_PANEL)
   );
 };
 

@@ -1,6 +1,6 @@
 import React from 'react';
 import { Layout, Button, Input, Popconfirm, Tag } from 'antd';
-import { EditOutlined, DeleteOutlined, PlusOutlined, MenuFoldOutlined } from '@ant-design/icons';
+import { EditOutlined, DeleteOutlined, PlusOutlined, CloseOutlined } from '@ant-design/icons';
 import type { Workflow } from '../../store/workflowStore';
 
 const { Sider } = Layout;
@@ -75,7 +75,7 @@ export const WorkflowSidebar: React.FC<WorkflowSidebarProps> = ({
           <Button
             type="text"
             size="small"
-            icon={<MenuFoldOutlined />}
+            icon={<CloseOutlined />}
             onClick={() => setWorkflowSiderCollapsed(true)}
             className="text-gray-400 hover:text-gray-600"
           />

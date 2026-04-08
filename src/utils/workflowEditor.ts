@@ -38,7 +38,7 @@ interface ViewportOptions {
   topInset?: number;
 }
 
-const REFERENCE_PATTERN = /^\{\{([^.\s]+)\.([^}\s]+)\}\}$/;
+const REFERENCE_PATTERN = /^\{\{([^.\s]+)\.([^}]+)\}\}$/;
 const SENSITIVE_HEADER_NAMES = new Set([
   'authorization',
   'proxy-authorization',
@@ -65,6 +65,19 @@ export const parseWorkflowReference = (value?: string | null) => {
     requestId: match[1],
     fieldName: match[2],
   };
+};
+
+export const getNestedValue = (obj: unknown, path: string): unknown => {
+  if (!obj || typeof obj !== 'object') return undefined;
+  const parts = path.split('.');
+  let current: unknown = obj;
+  for (const part of parts) {
+    if (current === null || current === undefined || typeof current !== 'object') {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[part];
+  }
+  return current;
 };
 
 export const analyzeWorkflow = (workflow: Workflow): WorkflowExecutionAnalysis => {
@@ -373,7 +386,7 @@ export const autoLayoutWorkflowNodes = (
 
       requestIds.forEach((requestId, index) => {
         positions[requestId] = {
-          x: Math.max(0, snapPosition(startX + index * (nodeWidth + horizontalGap), snapSize)),
+          x: Math.max(0, startX + index * (nodeWidth + horizontalGap)),
           y: Math.max(0, snapPosition(y, snapSize)),
         };
       });
@@ -393,7 +406,7 @@ export const autoLayoutWorkflowNodes = (
       const column = index % columns;
       const row = Math.floor(index / columns);
       positions[requestId] = {
-        x: Math.max(0, snapPosition(gridStartX + column * (nodeWidth + horizontalGap), snapSize)),
+        x: Math.max(0, gridStartX + column * (nodeWidth + horizontalGap)),
         y: Math.max(0, snapPosition(disconnectedStartY + row * (nodeHeight + verticalGap), snapSize)),
       };
     });
@@ -478,7 +491,7 @@ export const getViewportForBounds = (
 export const maskSensitiveHeaders = (headers: Record<string, unknown> = {}) =>
   Object.entries(headers).reduce<Record<string, string>>((acc, [key, value]) => {
     const normalizedKey = key.toLowerCase();
-    acc[key] = SENSITIVE_HEADER_NAMES.has(normalizedKey) ? '***' : String(value);
+    acc[normalizedKey] = SENSITIVE_HEADER_NAMES.has(normalizedKey) ? '***' : String(value);
     return acc;
   }, {});
 

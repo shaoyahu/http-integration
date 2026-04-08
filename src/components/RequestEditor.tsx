@@ -23,6 +23,7 @@ export const RequestEditor: React.FC = () => {
   const [isEditingBasicInfo, setIsEditingBasicInfo] = React.useState(false);
   const [response, setResponse] = React.useState<any>(null);
   const [previousRequestId, setPreviousRequestId] = React.useState<string | null>(null);
+  const [warnedForRequestId, setWarnedForRequestId] = React.useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = React.useState(false);
   const [activeTestTab, setActiveTestTab] = React.useState<'inputs' | 'results'>('inputs');
   const [curlPreview, setCurlPreview] = React.useState('');
@@ -64,6 +65,19 @@ export const RequestEditor: React.FC = () => {
       setPreviousRequestId(selectedRequestId);
     }
   }, [selectedRequest, selectedRequestId, previousRequestId]);
+
+  useEffect(() => {
+    if (!selectedRequestId || !selectedRequest || selectedRequestId === warnedForRequestId) {
+      return;
+    }
+    const hasUnmappedFields = selectedRequest.inputFields?.some(field => {
+      return field.name && !selectedRequest.apiMappings?.some(m => m.inputName === field.name);
+    });
+    if (hasUnmappedFields) {
+      message.warning('部分输入字段未配置映射，测试运行时不会发送这些字段');
+      setWarnedForRequestId(selectedRequestId);
+    }
+  }, [selectedRequestId, selectedRequest?.inputFields, selectedRequest?.apiMappings, warnedForRequestId]);
 
   useEffect(() => {
     if (drawerOpen && selectedRequest) {
@@ -212,10 +226,20 @@ export const RequestEditor: React.FC = () => {
   };
 
   const buildRequestPayload = (inputValueMap: Record<string, string>) => {
-    const headers: Record<string, string> = {};
-    const params: Record<string, string> = {};
-    const bodyObject: Record<string, unknown> = {};
+    const headers: Record<string, string> = (selectedRequest?.headers || []).reduce(
+      (acc, h) => (h.key ? { ...acc, [h.key]: h.value } : acc), {} as Record<string, string>
+    );
+    const params: Record<string, string> = (selectedRequest?.params || []).reduce(
+      (acc, p) => (p.key ? { ...acc, [p.key]: p.value } : acc), {} as Record<string, string>
+    );
     let url = selectedRequest?.url || '';
+
+    let bodyObject: Record<string, unknown> = {};
+    if (selectedRequest?.body && selectedRequest.body.trim() !== '') {
+      try {
+        bodyObject = JSON.parse(selectedRequest.body);
+      } catch { /* ignore */ }
+    }
 
     const mappings = selectedRequest?.apiMappings || [];
     for (const mapping of mappings) {

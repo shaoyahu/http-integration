@@ -44,6 +44,7 @@ const USER_IDENTITIES_COLLECTION = 'user_identities';
 const PERMISSION_POINTS_COLLECTION = 'permission_points';
 const USER_SESSIONS_COLLECTION = 'user_sessions';
 const AUTH_CAPTCHAS_COLLECTION = 'auth_captchas';
+const AUDIT_LOGS_COLLECTION = 'audit_logs';
 const SESSION_EXPIRE_MS = 7 * 24 * 60 * 60 * 1000;
 const SESSION_TOUCH_INTERVAL_MS = 5 * 60 * 1000;
 const CAPTCHA_EXPIRE_MS = 5 * 60 * 1000;
@@ -601,11 +602,20 @@ const requireAuth = async (req, res, next) => {
       );
     }
 
+    const authUser = buildAuthUserPayload(user, identity);
     req.auth = {
       tokenHash: session.tokenHash,
       sessionId: session._id,
-      user: buildAuthUserPayload(user, identity),
+      user: authUser,
     };
+    // Enforce mustChangePassword — block all operations except password change and logout
+    if (authUser.mustChangePassword) {
+      const allowedPaths = ['/api/auth/profile', '/api/auth/logout'];
+      const isAllowed = allowedPaths.some((path) => req.path.startsWith(path));
+      if (!isAllowed) {
+        return res.status(403).json({ error: '必须修改密码后才能继续操作', code: 'MUST_CHANGE_PASSWORD' });
+      }
+    }
     const lastSessionTouch = session.updatedAt ? new Date(session.updatedAt).getTime() : 0;
     if (Date.now() - lastSessionTouch >= SESSION_TOUCH_INTERVAL_MS) {
       await db.collection(USER_SESSIONS_COLLECTION).updateOne(
@@ -688,6 +698,10 @@ app.post('/api/auth/register', async (req, res) => {
   }
   if (normalizedUsername.length < 3 || normalizedUsername.length > 32) {
     return res.status(400).json({ error: '用户名长度需在 3-32 个字符之间', code: 'USERNAME_INVALID' });
+  }
+  const FORBIDDEN_USERNAMES = ['admin', 'administrator', 'root', 'system', 'superadmin', 'moderator', 'system-admin', 'sysadmin', 'superuser', 'testadmin', 'test-admin', 'administrators', 'webadmin'];
+  if (FORBIDDEN_USERNAMES.includes(normalizedUsername.toLowerCase())) {
+    return res.status(400).json({ error: '该用户名不可注册', code: 'USERNAME_FORBIDDEN' });
   }
   if (!normalizedPassword || normalizedPassword.length < 6) {
     return res.status(400).json({ error: '密码至少为 6 位', code: 'PASSWORD_TOO_SHORT' });
@@ -971,7 +985,6 @@ app.put('/api/requests-state/:requestId', requireAuth, requireAnyPermission(USER
     const nextRequest = {
       ...normalizedRequest,
       folderId: hasFolder ? normalizedRequest.folderId : null,
-      isPublic: existingRequest?.isPublic ?? normalizedRequest.isPublic,
     };
 
     const nextRequests = existingRequest
@@ -1920,6 +1933,132 @@ app.get('/api/admin/identities', requireAuth, requireAnyPermission(USER_PERMISSI
 app.post('/api/admin/identities', requireAuth, requireAnyPermission(USER_PERMISSION.ADMIN_PANEL), createIdentityHandler);
 app.put('/api/admin/identities/:identityId', requireAuth, requireAnyPermission(USER_PERMISSION.ADMIN_PANEL), updateIdentityHandler);
 app.get('/api/admin/permissions', requireAuth, requireAnyPermission(USER_PERMISSION.ADMIN_PANEL), listPermissionPointsHandler);
+
+const deleteAdminUserHandler = async (req, res) => {
+  const db = await getDbOrReconnect();
+  if (!db) {
+    return res.status(503).json(mongoUnavailableResponse());
+  }
+
+  const rawUserId = typeof req.params.userId === 'string' ? req.params.userId.trim() : '';
+  if (!ObjectId.isValid(rawUserId)) {
+    return res.status(400).json({ error: 'Invalid userId', code: 'INVALID_USER_ID' });
+  }
+  const userObjectId = new ObjectId(rawUserId);
+
+  try {
+    const existingUser = await db.collection(USERS_COLLECTION).findOne(
+      { _id: userObjectId },
+      { projection: { username: 1, role: 1, identityIds: 1 } }
+    );
+    if (!existingUser) {
+      return res.status(404).json({ error: 'User not found', code: 'USER_NOT_FOUND' });
+    }
+
+    if (existingUser.username?.toLowerCase() === 'admin') {
+      return res.status(403).json({ error: '禁止删除 admin 用户', code: 'ADMIN_CANNOT_BE_DELETED' });
+    }
+
+    // Prevent self-deletion
+    if (String(req.auth.user.id) === rawUserId) {
+      return res.status(403).json({ error: '不能删除自己', code: 'CANNOT_DELETE_SELF' });
+    }
+
+    // Prevent deleting the last admin
+    const isTargetAdmin =
+      existingUser.role === USER_ROLE.ADMIN ||
+      (existingUser.identityIds && existingUser.identityIds.includes(BUILTIN_IDENTITY_ID.ADMIN));
+    if (isTargetAdmin) {
+      const adminCount = await db.collection(USERS_COLLECTION).countDocuments({
+        $or: [
+          { _id: { $ne: userObjectId }, role: USER_ROLE.ADMIN },
+          { _id: { $ne: userObjectId }, identityIds: BUILTIN_IDENTITY_ID.ADMIN },
+        ],
+      });
+      if (adminCount === 0) {
+        return res.status(403).json({ error: '不能删除最后一个管理员', code: 'LAST_ADMIN_CANNOT_BE_DELETED' });
+      }
+    }
+
+    await db.collection(USERS_COLLECTION).deleteOne({ _id: userObjectId });
+    await db.collection(USER_SESSIONS_COLLECTION).deleteMany({ userId: userObjectId });
+    await db.collection(REQUEST_STATE_COLLECTION).deleteOne({ userId: rawUserId });
+    await db.collection(WORKFLOW_STATE_COLLECTION).deleteOne({ userId: rawUserId });
+    await db.collection(WORKFLOW_RUN_LOG_COLLECTION).deleteMany({ userId: rawUserId });
+
+    await db.collection(AUDIT_LOGS_COLLECTION).insertOne({
+      action: 'DELETE_USER',
+      targetUserId: rawUserId,
+      operatorId: req.auth?.user?.id,
+      timestamp: new Date(),
+    });
+
+    invalidateAdminMetaCache('identityOverview');
+    return res.json({ ok: true, userId: rawUserId });
+  } catch (error) {
+    return res.status(500).json({
+      error: 'Failed to delete user',
+      details: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+const deleteIdentityHandler = async (req, res) => {
+  const db = await getDbOrReconnect();
+  if (!db) {
+    return res.status(503).json(mongoUnavailableResponse());
+  }
+
+  const identityId = typeof req.params.identityId === 'string' ? req.params.identityId.trim() : '';
+  if (!identityId) {
+    return res.status(400).json({ error: 'Invalid identityId', code: 'INVALID_IDENTITY_ID' });
+  }
+
+  try {
+    const identity = await db.collection(USER_IDENTITIES_COLLECTION).findOne(
+      { _id: identityId }
+    );
+    if (!identity) {
+      return res.status(404).json({ error: 'Identity not found', code: 'IDENTITY_NOT_FOUND' });
+    }
+
+    if (identityId === BUILTIN_IDENTITY_ID.USER || identityId === BUILTIN_IDENTITY_ID.ADMIN) {
+      return res.status(403).json({ error: '内置身份不可删除', code: 'BUILTIN_IDENTITY_CANNOT_BE_DELETED' });
+    }
+
+    const usersWithIdentity = await db.collection(USERS_COLLECTION).countDocuments(
+      { identityIds: identityId }
+    );
+    if (usersWithIdentity > 0) {
+      return res.status(400).json({
+        error: '该身份已被用户使用，无法删除',
+        code: 'IDENTITY_IN_USE',
+        userCount: usersWithIdentity,
+      });
+    }
+
+    await db.collection(USER_IDENTITIES_COLLECTION).deleteOne({ _id: identityId });
+
+    await db.collection(AUDIT_LOGS_COLLECTION).insertOne({
+      action: 'DELETE_IDENTITY',
+      targetIdentityId: identityId,
+      operatorId: req.auth?.user?.id,
+      timestamp: new Date(),
+    });
+
+    invalidateAdminMetaCache('identityOverview');
+    return res.json({ ok: true, identityId });
+  } catch (error) {
+    return res.status(500).json({
+      error: 'Failed to delete identity',
+      details: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+app.delete('/api/admin/users/:userId', requireAuth, requireAnyPermission(USER_PERMISSION.ADMIN_PANEL), deleteAdminUserHandler);
+app.delete('/api/admin/identities/:identityId', requireAuth, requireAnyPermission(USER_PERMISSION.ADMIN_PANEL), deleteIdentityHandler);
+
 // Backward-compatible aliases to avoid 404 when client/server versions are mismatched.
 app.get('/api/user-permissions', requireAuth, requireAnyPermission(USER_PERMISSION.ADMIN_PANEL), listAdminUsersHandler);
 app.put('/api/user-permissions/:userId', requireAuth, requireAnyPermission(USER_PERMISSION.ADMIN_PANEL), updateUserPermissionsHandler);
@@ -2091,17 +2230,43 @@ const startServer = async () => {
       await db.collection(USER_SESSIONS_COLLECTION).createIndex({ tokenHash: 1 }, { unique: true });
       await db.collection(USER_SESSIONS_COLLECTION).createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
       await db.collection(AUTH_CAPTCHAS_COLLECTION).createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
-      await db.collection(USERS_COLLECTION).updateOne(
-        { username: 'admin' },
-        {
-          $set: {
+      // 仅当不存在管理员时才创建初始 admin 账号
+      const existingAdmin = await db.collection(USERS_COLLECTION).findOne({
+        $or: [
+          { role: USER_ROLE.ADMIN },
+          { identityIds: BUILTIN_IDENTITY_ID.ADMIN },
+        ],
+      });
+      if (!existingAdmin) {
+        const adminExists = await db.collection(USERS_COLLECTION).findOne({ username: 'admin' });
+        const now = new Date();
+        if (!adminExists) {
+          await db.collection(USERS_COLLECTION).insertOne({
+            username: 'admin',
+            passwordHash: hashPassword('admin'),
             role: USER_ROLE.ADMIN,
             permissions: [...ADMIN_ALL_PERMISSIONS],
             identityIds: [BUILTIN_IDENTITY_ID.ADMIN],
-            updatedAt: new Date(),
-          },
+            disabled: false,
+            mustChangePassword: true,
+            createdAt: now,
+            updatedAt: now,
+          });
+        } else {
+          // Legacy 'admin' user exists without admin role/identity — create a separate admin account
+          await db.collection(USERS_COLLECTION).insertOne({
+            username: 'system-admin',
+            passwordHash: hashPassword('system-admin'),
+            role: USER_ROLE.ADMIN,
+            permissions: [...ADMIN_ALL_PERMISSIONS],
+            identityIds: [BUILTIN_IDENTITY_ID.ADMIN],
+            disabled: false,
+            mustChangePassword: true,
+            createdAt: now,
+            updatedAt: now,
+          });
         }
-      );
+      }
     } catch (error) {
       console.warn('[mongo] failed to create auth indexes:', error instanceof Error ? error.message : String(error));
     }
