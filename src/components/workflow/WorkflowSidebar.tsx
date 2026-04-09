@@ -23,7 +23,7 @@ interface WorkflowSidebarProps {
   onRenameWorkflow: (id: string, name: string) => void;
 }
 
-export const WorkflowSidebar: React.FC<WorkflowSidebarProps> = ({
+export const WorkflowSidebar = React.memo(function WorkflowSidebar({
   workflows,
   selectedWorkflowId,
   isLoadingState,
@@ -39,19 +39,19 @@ export const WorkflowSidebar: React.FC<WorkflowSidebarProps> = ({
   onAddWorkflow,
   onDeleteWorkflow,
   onRenameWorkflow,
-}) => {
-  const handleRename = (id: string, newName: string) => {
+}: WorkflowSidebarProps) {
+  const handleRename = React.useCallback((id: string, newName: string) => {
     if (newName.trim()) {
       onRenameWorkflow(id, newName.trim());
     }
     setEditingId(null);
-  };
+  }, [onRenameWorkflow, setEditingId]);
 
-  const startEditing = (event: React.MouseEvent, workflow: Workflow) => {
+  const startEditing = React.useCallback((event: React.MouseEvent, workflow: Workflow) => {
     event.stopPropagation();
     setEditingId(workflow.id);
     setEditingName(workflow.name);
-  };
+  }, [setEditingId, setEditingName]);
 
   if (workflowSiderCollapsed) {
     return null;
@@ -160,6 +160,6 @@ export const WorkflowSidebar: React.FC<WorkflowSidebarProps> = ({
       </div>
     </Sider>
   );
-};
+});
 
 export default WorkflowSidebar;

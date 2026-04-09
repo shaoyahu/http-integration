@@ -13,6 +13,7 @@ import { AdminLayout } from './components/admin/AdminLayout';
 import { ProtectedRoute, PublicOnlyRoute, getDefaultAuthorizedPath } from './components/AuthRoutes';
 import { useAuthStore } from './store/authStore';
 import { USER_PERMISSIONS } from './constants/auth';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 function App() {
   const initializeAuth = useAuthStore((state) => state.initializeAuth);
@@ -24,34 +25,36 @@ function App() {
   }, [initializeAuth]);
 
   return (
-    <Routes>
-      <Route path="/" element={<Navigate to={defaultPath} replace />} />
-      <Route element={<PublicOnlyRoute />}>
-        <Route path="/login" element={<LoginPage />} />
-        <Route path="/register" element={<RegisterPage />} />
-      </Route>
-      <Route element={<ProtectedRoute />}>
-        <Route element={<AppShell />}>
-          <Route element={<ProtectedRoute requiredPermissions={[USER_PERMISSIONS.REQUEST_MANAGEMENT]} />}>
-            <Route path="/requests" element={<RequestPage />} />
-          </Route>
-          <Route element={<ProtectedRoute requiredPermissions={[USER_PERMISSIONS.WORKFLOW_MANAGEMENT]} />}>
-            <Route path="/workflows" element={<WorkflowPage />} />
-          </Route>
-          <Route element={<ProtectedRoute requiredPermissions={[USER_PERMISSIONS.ADMIN_PANEL]} />}>
-            <Route element={<AdminLayout />}>
-              <Route path="/admin" element={<AdminPage />} />
-              <Route path="/admin/users" element={<UserManagementPage />} />
-              <Route path="/admin/identities" element={<IdentityManagementPage />} />
-            </Route>
-            <Route path="/admin/user-permissions" element={<Navigate to="/admin/users" replace />} />
-            <Route path="/user-permissions" element={<Navigate to="/admin/users" replace />} />
-          </Route>
-          <Route path="/forbidden" element={<ForbiddenPage />} />
+    <ErrorBoundary>
+      <Routes>
+        <Route path="/" element={<Navigate to={defaultPath} replace />} />
+        <Route element={<PublicOnlyRoute />}>
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/register" element={<RegisterPage />} />
         </Route>
-      </Route>
-      <Route path="*" element={<Navigate to={defaultPath} replace />} />
-    </Routes>
+        <Route element={<ProtectedRoute />}>
+          <Route element={<AppShell />}>
+            <Route element={<ProtectedRoute requiredPermissions={[USER_PERMISSIONS.REQUEST_MANAGEMENT]} />}>
+              <Route path="/requests" element={<RequestPage />} />
+            </Route>
+            <Route element={<ProtectedRoute requiredPermissions={[USER_PERMISSIONS.WORKFLOW_MANAGEMENT]} />}>
+              <Route path="/workflows" element={<WorkflowPage />} />
+            </Route>
+            <Route element={<ProtectedRoute requiredPermissions={[USER_PERMISSIONS.ADMIN_PANEL]} />}>
+              <Route element={<AdminLayout />}>
+                <Route path="/admin" element={<AdminPage />} />
+                <Route path="/admin/users" element={<UserManagementPage />} />
+                <Route path="/admin/identities" element={<IdentityManagementPage />} />
+              </Route>
+              <Route path="/admin/user-permissions" element={<Navigate to="/admin/users" replace />} />
+              <Route path="/user-permissions" element={<Navigate to="/admin/users" replace />} />
+            </Route>
+            <Route path="/forbidden" element={<ForbiddenPage />} />
+          </Route>
+        </Route>
+        <Route path="*" element={<Navigate to={defaultPath} replace />} />
+      </Routes>
+    </ErrorBoundary>
   );
 }
 

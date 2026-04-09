@@ -314,3 +314,17 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
       ),
     })),
 }))
+
+// Selectors for easier state access
+export const selectWorkflows = (state: WorkflowStore) => state.workflows;
+export const selectSelectedWorkflowId = (state: WorkflowStore) => state.selectedWorkflowId;
+export const selectSelectedWorkflow = (state: WorkflowStore): Workflow | null => {
+  const id = state.selectedWorkflowId;
+  if (!id) return null;
+  const wf = state.workflows.find((w) => w.id === id);
+  return wf ?? null;
+};
+export const selectSelectedWorkflowRequests = (state: WorkflowStore): WorkflowRequest[] => {
+  const wf = selectSelectedWorkflow(state);
+  return wf?.requests ?? [];
+};

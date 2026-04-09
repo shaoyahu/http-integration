@@ -1,17 +1,20 @@
 import React, { useEffect } from 'react';
-import { Form, Input, Select, Button, Tabs, Card, Row, Col, message, Drawer, Popconfirm } from 'antd';
+import { Form, Input, Select, Button, Drawer, Popconfirm, Row, Col, Card, Tabs, message } from 'antd';
 import { PlusOutlined, DeleteOutlined, InfoCircleOutlined } from '@ant-design/icons';
 import { useRequestStore, type ParamField, type OutputField, type ApiMapping } from '../store/requestStore';
-import { proxyRequest } from '../api/http';
 import Editor from '@monaco-editor/react';
 import { applyPathMapping, parseBodyValue, setNestedValue } from '../utils/requestPayload';
 import { formatResponseData, parseResponseData } from '../utils/response';
+import RequestBasicInfo from './request/RequestBasicInfo';
+import RequestParameters from './request/RequestParameters';
+import RequestMappings from './request/RequestMappings';
+import RequestResponse from './request/RequestResponse';
 
 const { Option } = Select;
 
 const hasPathPlaceholder = (url: string, key: string) => url.includes(`{${key}}`) || url.includes(`:${key}`);
 
-export const RequestEditor: React.FC = () => {
+export const RequestEditor = React.memo(function RequestEditor(): JSX.Element {
   const { requests, selectedRequestId, updateRequest } = useRequestStore();
   const [testForm] = Form.useForm();
   const [testLoading, setTestLoading] = React.useState(false);
@@ -176,7 +179,6 @@ export const RequestEditor: React.FC = () => {
     setDraftUrl(selectedRequest.url);
     setIsEditingBasicInfo(true);
   };
-
   const handleImportOutputFields = () => {
     if (!isEditingBasicInfo) {
       message.warning('请先点击编辑，再配置出参字段');
@@ -481,61 +483,20 @@ export const RequestEditor: React.FC = () => {
     label: '基本信息',
     className: '[&_.ant-tabs-tab]:bg-cyan-50/50 [&_.ant-tabs-tab-active]:bg-cyan-100 [&_.ant-tabs-tab-active]:border-b-[#0891b2] [&_.ant-tabs-tab]:border-b-transparent',
     children: (
-      <div className="space-y-3">
-        <div>
-          <div className="mb-1 text-sm font-medium text-gray-700">请求名称</div>
-          {isEditingBasicInfo ? (
-            <Input
-              value={requestName}
-              onChange={(e) => setRequestName(e.target.value)}
-              onPressEnter={handleSaveBasicInfo}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape') {
-                  handleCancelEditBasicInfo();
-                }
-              }}
-              placeholder="请求名称"
-              className="max-w-xl"
-              autoFocus
-            />
-          ) : (
-            <div className="min-h-8 px-2 py-1 text-sm text-gray-800">
-              {selectedRequest.name || '-'}
-            </div>
-          )}
-        </div>
-        <div>
-          <div className="mb-1 text-sm font-medium text-gray-700">请求描述</div>
-          {isEditingBasicInfo ? (
-            <Input.TextArea
-              value={requestDescription}
-              onChange={(e) => setRequestDescription(e.target.value)}
-              placeholder="可选：补充这个请求的用途或说明"
-              rows={3}
-              className="max-w-xl"
-            />
-          ) : (
-            <div className="min-h-8 px-2 py-1 text-sm text-gray-700 whitespace-pre-wrap">
-              {selectedRequest.description || '-'}
-            </div>
-          )}
-        </div>
-        <div>
-          <div className="mb-1 text-sm font-medium text-gray-700">节点图标</div>
-          {isEditingBasicInfo ? (
-            <Input
-              value={requestIconUrl}
-              onChange={(e) => setRequestIconUrl(e.target.value)}
-              placeholder="可选：输入图标图片 URL，用于工作流节点显示"
-              className="max-w-xl"
-            />
-          ) : (
-            <div className="min-h-8 px-2 py-1 text-sm text-gray-700">
-              {selectedRequest.iconUrl || '-'}
-            </div>
-          )}
-        </div>
-      </div>
+      <RequestBasicInfo
+        request={selectedRequest!}
+        isEditing={isEditingBasicInfo}
+        name={selectedRequest?.name || ''}
+        draftMethod={draftMethod}
+        draftUrl={draftUrl}
+        method={selectedRequest?.method || 'GET'}
+        url={selectedRequest?.url || ''}
+        onNameChange={(v) => updateRequest(selectedRequest!.id, { name: v })}
+        onMethodChange={(v) => updateRequest(selectedRequest!.id, { method: v as any })}
+        onUrlChange={(v) => updateRequest(selectedRequest!.id, { url: v })}
+        onImport={() => {}}
+        onExport={() => {}}
+      />
     ),
   };
 
@@ -855,6 +816,42 @@ export const RequestEditor: React.FC = () => {
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
+      {selectedRequest && (
+        <div className="space-y-4 px-4 py-2 bg-white rounded shadow-sm mb-4">
+          <RequestBasicInfo
+            request={selectedRequest}
+            isEditing={isEditingBasicInfo}
+            name={selectedRequest.name}
+            draftMethod={draftMethod}
+            draftUrl={draftUrl}
+            method={selectedRequest.method}
+            url={selectedRequest.url}
+            onNameChange={(v) => updateRequest(selectedRequest.id, { name: v })}
+            onMethodChange={(v) => updateRequest(selectedRequest.id, { method: v as any })}
+            onUrlChange={(v) => updateRequest(selectedRequest.id, { url: v })}
+            onImport={() => {}}
+            onExport={() => {}}
+          />
+          <RequestParameters
+            request={selectedRequest}
+            isEditing={isEditingBasicInfo}
+            onAddInputField={handleAddInputField}
+            onRemoveInputField={handleRemoveInputField}
+            onInputFieldChange={handleInputChange}
+            onAddOutputField={handleAddOutputField}
+            onRemoveOutputField={handleRemoveOutputField}
+            onOutputFieldChange={handleOutputChange}
+          />
+          <RequestMappings
+            request={selectedRequest}
+            isEditing={isEditingBasicInfo}
+            onAddMapping={handleAddMapping}
+            onRemoveMapping={handleRemoveMapping}
+            onMappingChange={handleMappingChange}
+          />
+          <RequestResponse response={response} onParseFromResponse={handleImportOutputFields} />
+        </div>
+      )}
       <Card className="mb-4">
         <Tabs
           items={tabsItems}
@@ -1005,4 +1002,4 @@ export const RequestEditor: React.FC = () => {
       </Drawer>
     </div>
   );
-};
+});

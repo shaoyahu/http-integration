@@ -1,4 +1,5 @@
 import React, { useCallback, useState } from 'react';
+import { UndoOutlined, RedoOutlined } from '@ant-design/icons';
 import { Layout, Button, message, Empty, Drawer, Input, Tag, Tooltip } from 'antd';
 import {
   PlayCircleOutlined,
@@ -69,6 +70,7 @@ import {
   snapToGrid,
   MIN_NODE_HORIZONTAL_GAP,
 } from '../components/workflow';
+import { renderCanvasFrame } from '../components/workflow/WorkflowCanvasRenderer';
 
 const { Content } = Layout;
 const WORKFLOW_VIEW_TOP_INSET = 104;
@@ -301,9 +303,51 @@ export const WorkflowPage: React.FC = () => {
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [connectingFrom, setConnectingFrom] = useState<{ nodeId: string; pointType: 'output' } | null>(null);
   const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null);
+  // Separate ref for canvas-drawing mouse position to avoid triggering canvas redraws
+  const canvasMousePosRef = React.useRef<{ x: number; y: number } | null>(null);
   const [selectedResult, setSelectedResult] = useState<WorkflowRunNodeLog | null>(null);
   const [nodePositions, setNodePositions] = useState<Record<string, { x: number; y: number }>>({});
   const nodePositionsRef = React.useRef<Record<string, { x: number; y: number }>>({});
+  // Undo/redo state stacks
+  const [undoStack, setUndoStack] = useState<WorkflowStatePayload[]>([]);
+  const [redoStack, setRedoStack] = useState<WorkflowStatePayload[]>([]);
+
+  const currentSnapshot = React.useMemo(
+    () => buildWorkflowSnapshot({ workflows, selectedWorkflowId }),
+    [workflows, selectedWorkflowId]
+  );
+  const currentSerializedSnapshot = React.useMemo(
+    () => serializeWorkflowSnapshot(currentSnapshot),
+    [currentSnapshot]
+  );
+
+  const saveToUndo = useCallback((snapshot: WorkflowStatePayload) => {
+    setUndoStack((prev) => [...prev.slice(-20), snapshot]); // Keep last 20 snapshots
+    setRedoStack([]);
+  }, []);
+  
+  // Apply a snapshot to the store/state and update last saved refs
+  const applySnapshot = useCallback((snapshot: WorkflowStatePayload) => {
+    setWorkflowState(snapshot.workflows, snapshot.selectedWorkflowId);
+    lastSavedSnapshotRef.current = snapshot;
+    lastSavedSerializedRef.current = serializeWorkflowSnapshot(snapshot);
+  }, [setWorkflowState]);
+  // Undo / Redo handlers
+  const handleUndo = useCallback(() => {
+    if (undoStack.length === 0) return;
+    const prev = undoStack[undoStack.length - 1];
+    setUndoStack((s) => s.slice(0, -1));
+    setRedoStack((r) => [...r, currentSnapshot]);
+    applySnapshot(prev as unknown as WorkflowStatePayload);
+  }, [undoStack, currentSnapshot, applySnapshot]);
+
+  const handleRedo = useCallback(() => {
+    if (redoStack.length === 0) return;
+    const next = redoStack[redoStack.length - 1];
+    setRedoStack((s) => s.slice(0, -1));
+    setUndoStack((u) => [...u, currentSnapshot]);
+    applySnapshot(next as unknown as WorkflowStatePayload);
+  }, [redoStack, currentSnapshot, applySnapshot]);
   const [view, setView] = useState<{ scale: number; offsetX: number; offsetY: number }>({ scale: 1, offsetX: 0, offsetY: 0 });
   const [canvasSize, setCanvasSize] = useState<{ width: number; height: number }>({ width: MIN_CANVAS_WIDTH, height: MIN_CANVAS_HEIGHT });
   const canvasSizeRef = React.useRef(canvasSize);
@@ -325,6 +369,8 @@ export const WorkflowPage: React.FC = () => {
   const [isLoadingState, setIsLoadingState] = useState(true);
   const [isSavingState, setIsSavingState] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // Auto-save indicator: shows a subtle Saving... toast in the header during background autosaves
+  const [isAutoSaving, setIsAutoSaving] = useState(false);
   const [isDatabaseConnected, setIsDatabaseConnected] = useState(false);
   const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
   const canvasContainerRef = React.useRef<HTMLDivElement | null>(null);
@@ -353,14 +399,6 @@ export const WorkflowPage: React.FC = () => {
   const triggerPos = React.useMemo(
     () => ({ x: canvasSize.width / 2 - TRIGGER_WIDTH / 2, y: WORKFLOW_VIEW_TOP_INSET + 20 }),
     [canvasSize, WORKFLOW_VIEW_TOP_INSET]
-  );
-  const currentSnapshot = React.useMemo(
-    () => buildWorkflowSnapshot({ workflows, selectedWorkflowId }),
-    [workflows, selectedWorkflowId]
-  );
-  const currentSerializedSnapshot = React.useMemo(
-    () => serializeWorkflowSnapshot(currentSnapshot),
-    [currentSnapshot]
   );
   const isDirty = initializedRef.current && currentSerializedSnapshot !== lastSavedSerializedRef.current;
   const saveStatusText = getSaveStatusText(isLoadingState, isSavingState, isDirty, saveError);
@@ -473,6 +511,8 @@ export const WorkflowPage: React.FC = () => {
   }, [setWorkflowState]);
 
   React.useEffect(() => {
+    // Existing general autosave for any store changes (kept as fallback). We'll also add a targeted autosave for
+    // nodePositions and selectedWorkflow with a 2s debounce and a dedicated visual indicator.
     const unsubscribe = useWorkflowStore.subscribe((state) => {
       if (!initializedRef.current) {
         return;
@@ -480,6 +520,7 @@ export const WorkflowPage: React.FC = () => {
       if (saveTimerRef.current) {
         window.clearTimeout(saveTimerRef.current);
       }
+      // Keep existing behavior but keep debounce modest to avoid too many saves
       saveTimerRef.current = window.setTimeout(async () => {
         const snapshot = buildWorkflowSnapshot(state);
         const request = buildWorkflowPersistRequest(lastSavedSnapshotRef.current, snapshot);
@@ -501,6 +542,34 @@ export const WorkflowPage: React.FC = () => {
       }
     };
   }, [persistWorkflowState]);
+
+  // Targeted debounced autosave for nodePositions and selectedWorkflow with 2s delay
+  React.useEffect(() => {
+    if (!selectedWorkflow) return;
+    if (saveTimerRef.current) {
+      window.clearTimeout(saveTimerRef.current);
+    }
+    saveTimerRef.current = window.setTimeout(async () => {
+      // Build snapshot from current store state
+      const snapshot = buildWorkflowSnapshot(useWorkflowStore.getState());
+      const request = buildWorkflowPersistRequest(lastSavedSnapshotRef.current, snapshot);
+      if (!request) return;
+      setIsAutoSaving(true);
+      try {
+        await persistWorkflowState(request);
+      } catch (error) {
+        const details = getErrorMessage(error);
+        console.error('Auto-save failed:', details);
+      } finally {
+        setIsAutoSaving(false);
+      }
+    }, 2000);
+    return () => {
+      if (saveTimerRef.current) {
+        window.clearTimeout(saveTimerRef.current);
+      }
+    };
+  }, [nodePositions, selectedWorkflow]);
 
   React.useEffect(() => {
     let mounted = true;
@@ -600,10 +669,67 @@ export const WorkflowPage: React.FC = () => {
   }, [nodePositions]);
 
   React.useEffect(() => {
+    let cancelled = false;
     const handleKeyDown = (event: KeyboardEvent) => {
+      // Don't trigger shortcuts while typing in inputs
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase() ?? '';
+      if (tag === 'input' || tag === 'textarea' || (target?.isContentEditable ?? false)) {
+        return;
+      }
+      // Space for panning/space-dragging
       if (event.code === 'Space') {
         spaceDownRef.current = true;
         setSpaceDown(true);
+        return;
+      }
+
+      // Escape - Deselect current node/edge
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setSelectedNodeId(null);
+        setSelectedEdgeId(null);
+        return;
+      }
+
+      // Delete/Backspace - Delete selected node or edge
+      if (event.key === 'Delete' || event.key === 'Backspace') {
+        event.preventDefault();
+        if (selectedNodeId) {
+          removeRequestFromWorkflow(selectedWorkflowId ?? '', selectedNodeId);
+          setSelectedNodeId(null);
+        } else if (selectedEdgeId) {
+          removeEdge(selectedWorkflowId ?? '', selectedEdgeId);
+          setSelectedEdgeId(null);
+        }
+        return;
+      }
+
+      // Undo - Ctrl/Cmd+Z (if supported by store)
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') {
+        const undoFn = (useWorkflowStore as any).undo;
+        if (typeof undoFn === 'function') {
+          event.preventDefault();
+          try {
+            undoFn();
+          } catch {
+            // ignore
+          }
+        }
+        return;
+      }
+
+      // Save - Ctrl/Cmd+S
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
+        event.preventDefault();
+        const snapshot = currentSnapshot;
+        const request = buildWorkflowPersistRequest(lastSavedSnapshotRef.current, snapshot);
+        if (request) {
+          persistWorkflowState(request).catch((err) => {
+            console.error('Keyboard Save failed', err);
+          });
+        }
+        return;
       }
     };
     const handleKeyUp = (event: KeyboardEvent) => {
@@ -618,7 +744,7 @@ export const WorkflowPage: React.FC = () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
-  }, []);
+  }, [selectedWorkflowId, selectedNodeId, selectedEdgeId, removeRequestFromWorkflow, removeEdge, setSelectedNodeId, setSelectedEdgeId, currentSnapshot, lastSavedSnapshotRef, persistWorkflowState]);
 
   React.useEffect(() => {
     setAddPanelOpen(false);
@@ -1176,6 +1302,8 @@ export const WorkflowPage: React.FC = () => {
     if (!selectedWorkflow) {
       return;
     }
+    // Save current state for undo before mutating the workflow
+    saveToUndo(buildWorkflowSnapshot(useWorkflowStore.getState()));
 
     const newId = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
     const nextRequest: WorkflowRequest = {
@@ -1225,6 +1353,8 @@ export const WorkflowPage: React.FC = () => {
       [newId]: nextPosition,
     };
 
+    // Save before mutating node positions and workflow state
+    saveToUndo(buildWorkflowSnapshot(useWorkflowStore.getState()));
     setNodePositions(mergedPositions);
     updateWorkflow(selectedWorkflow.id, {
       requests: currentRequests,
@@ -1374,10 +1504,12 @@ export const WorkflowPage: React.FC = () => {
     if (!selectedWorkflow) return;
     const { x, y } = getCanvasPoint(event);
 
-    // Update mouse position for preview line
+    // Update mouse position for preview line (UI state)
     if (connectingFrom) {
       setMousePos({ x, y });
     }
+    // Also update drawing mouse position in a ref to avoid redraws
+    canvasMousePosRef.current = { x, y };
 
     // Update hover state
     const connectorPoint = hitTestConnectorPoint(x, y);
@@ -1418,6 +1550,8 @@ export const WorkflowPage: React.FC = () => {
       if (Math.abs(x - dragRef.current.startX) > 4 || Math.abs(y - dragRef.current.startY) > 4) {
         dragRef.current.moved = true;
       }
+      // Save current state for undo before mutating node position
+      saveToUndo(buildWorkflowSnapshot(useWorkflowStore.getState()));
       setNodePositions((prev) => ({
         ...prev,
         [id]: { x: Math.max(0, newX), y: Math.max(0, newY) },
@@ -1433,6 +1567,8 @@ export const WorkflowPage: React.FC = () => {
     if (connectingFrom) {
       const connectorPoint = hitTestConnectorPoint(x, y);
       if (connectorPoint && connectorPoint.pointType === 'input') {
+        // Save before mutating the workflow by creating an edge
+        saveToUndo(buildWorkflowSnapshot(useWorkflowStore.getState()));
         addEdge(selectedWorkflow.id, connectingFrom.nodeId, connectorPoint.nodeId);
         message.success('连接已创建');
       }
@@ -1671,7 +1807,7 @@ export const WorkflowPage: React.FC = () => {
     }
 
     // Draw preview line while connecting
-    if (connectingFrom && mousePos) {
+    if (connectingFrom && canvasMousePosRef.current) {
       let startPos: { x: number; y: number } | null = null;
 
       if (connectingFrom.nodeId === 'trigger') {
@@ -1689,7 +1825,8 @@ export const WorkflowPage: React.FC = () => {
         ctx.setLineDash([6 / view.scale, 6 / view.scale]);
         ctx.beginPath();
         ctx.moveTo(startPos.x, startPos.y);
-        ctx.lineTo(mousePos.x, mousePos.y);
+        const mp = canvasMousePosRef.current;
+        if (mp) ctx.lineTo(mp.x, mp.y);
         ctx.stroke();
         ctx.setLineDash([]);
       }
@@ -1736,7 +1873,7 @@ export const WorkflowPage: React.FC = () => {
           img.onerror = () => {
             drawDefaultIcon(centerX, centerY, view.scale);
           };
-          drawDefaultIcon(centerX, centerY, view.scale);
+          // Do not draw default icon here to avoid duplicate rendering
         }
       } else {
         drawDefaultIcon(centerX, centerY, view.scale);
@@ -1828,7 +1965,7 @@ export const WorkflowPage: React.FC = () => {
         ctx.stroke();
       }
     });
-  }, [selectedWorkflow, nodePositions, selectedNodeId, selectedEdgeId, view, canvasSize, triggerPos, hoveredNodeId, connectingFrom, mousePos]);
+  }, [selectedWorkflow, nodePositions, selectedNodeId, selectedEdgeId, view, canvasSize, triggerPos, hoveredNodeId, connectingFrom]);
 
   React.useEffect(() => {
     const canvas = canvasRef.current;
@@ -1942,6 +2079,9 @@ export const WorkflowPage: React.FC = () => {
                         <Tag color={saveStatusColor} className="m-0 rounded-full px-3 py-1">
                           {saveStatusText}
                         </Tag>
+                        {isAutoSaving ? (
+                          <span className="text-sm text-gray-600 ml-2" title="Auto-saving in background">Saving...</span>
+                        ) : null}
                         {saveError ? (
                           <Button size="small" icon={<ReloadOutlined />} onClick={handleRetrySave}>
                             重试保存
@@ -2176,6 +2316,10 @@ export const WorkflowPage: React.FC = () => {
                     ) : null}
                   </div>
 
+                  <div className="flex items-center gap-2 mb-2">
+                    <Button type="default" size="small" onClick={handleUndo} disabled={undoStack.length === 0} icon={<UndoOutlined />} title="Undo" />
+                    <Button type="default" size="small" onClick={handleRedo} disabled={redoStack.length === 0} icon={<RedoOutlined />} title="Redo" />
+                  </div>
                   <WorkflowToolbar
                     view={view}
                     setView={setView}

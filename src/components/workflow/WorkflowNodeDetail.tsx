@@ -28,13 +28,13 @@ interface WorkflowNodeDetailProps {
   ) => void;
 }
 
-export const WorkflowNodeDetail: React.FC<WorkflowNodeDetailProps> = ({
+export const WorkflowNodeDetail = React.memo(function WorkflowNodeDetail({
   selectedNodeId,
   selectedWorkflow,
   resultsLength,
   onClose,
   updateWorkflowRequestInputValue,
-}) => {
+}: WorkflowNodeDetailProps) {
   if (!selectedNodeId || !selectedWorkflow) {
     return null;
   }
@@ -125,6 +125,6 @@ export const WorkflowNodeDetail: React.FC<WorkflowNodeDetailProps> = ({
       </div>
     </div>
   );
-};
+});
 
 export default WorkflowNodeDetail;

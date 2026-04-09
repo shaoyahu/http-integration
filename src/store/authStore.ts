@@ -50,6 +50,9 @@ const normalizeAuthUser = (user: AuthUser): AuthUser => ({
   mustChangePassword: Boolean(user.mustChangePassword),
 });
 
+// Mutex to serialize initialization across concurrent calls
+let initAuthPromise: Promise<void> | null = null;
+
 export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
   initialized: false,
@@ -71,11 +74,20 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       return;
     }
     set({ initializing: true });
-    try {
-      const user = await fetchCurrentUser();
-      set({ user: normalizeAuthUser(user), initialized: true, initializing: false });
-    } catch {
-      set({ user: null, initialized: true, initializing: false });
+    // Ensure only a single fetch runs across concurrent calls
+    if (!initAuthPromise) {
+      initAuthPromise = (async () => {
+        try {
+          const user = await fetchCurrentUser();
+          set({ user: normalizeAuthUser(user), initialized: true, initializing: false });
+        } catch {
+          set({ user: null, initialized: true, initializing: false });
+        } finally {
+          initAuthPromise = null;
+        }
+      })();
     }
+    await initAuthPromise;
+    return;
   },
 }));
