@@ -1,6 +1,6 @@
 import axios from 'axios';
 import type { HttpRequest, RequestFolder } from '../store/requestStore';
-import type { Workflow } from '../store/workflowStore';
+import type { Workflow, WorkflowFolder } from '../store/workflowStore';
 import type { WorkflowRunLog, WorkflowRunNodeLog } from '../types/workflow';
 
 const API_BASE_URL = '/api';
@@ -40,7 +40,8 @@ export const healthCheck = async () => {
   if (healthCheckCache?.promise) {
     return healthCheckCache.promise;
   }
-  const promise = api.get('/health').then((response) => {
+  let promise: Promise<unknown>;
+  promise = api.get('/health').then((response) => {
     healthCheckCache = {
       timestamp: Date.now(),
       data: response.data,
@@ -72,6 +73,7 @@ export interface RequestItemPayload {
 
 export interface WorkflowStatePayload {
   workflows: Workflow[];
+  folders: WorkflowFolder[];
   selectedWorkflowId: string | null;
 }
 
@@ -181,6 +183,7 @@ export const fetchWorkflowState = async (): Promise<WorkflowStatePayload> => {
   const data = response.data || {};
   return {
     workflows: Array.isArray(data.workflows) ? data.workflows : [],
+    folders: Array.isArray(data.folders) ? data.folders : [],
     selectedWorkflowId: typeof data.selectedWorkflowId === 'string' ? data.selectedWorkflowId : null,
   };
 };

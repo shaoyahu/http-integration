@@ -56,7 +56,7 @@ export const WorkflowNodeDetail = React.memo(function WorkflowNodeDetail({
   return (
     <div
       className="absolute w-[360px] max-h-[min(720px,calc(100vh-220px))] bg-white/95 backdrop-blur border border-gray-200 rounded-2xl shadow-lg overflow-hidden flex flex-col z-30"
-      style={{ top: 96, right: resultsLength > 0 ? 340 + 16 : 16 }}
+      style={{ top: 96, right: 16 }}
     >
       <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
         <div className="font-medium text-gray-800">请求详情</div>

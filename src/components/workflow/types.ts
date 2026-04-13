@@ -1,9 +1,9 @@
 // Canvas constants
-export const NODE_SIZE = 80;
+export const NODE_SIZE = 64;
 export const NODE_WIDTH = NODE_SIZE;
 export const NODE_HEIGHT = NODE_SIZE;
-export const TRIGGER_WIDTH = 220;
-export const TRIGGER_HEIGHT = 80;
+export const TRIGGER_WIDTH = 180;
+export const TRIGGER_HEIGHT = 64;
 export const MIN_CANVAS_WIDTH = 0;
 export const MIN_CANVAS_HEIGHT = 0;
 export const COMPACT_NODE_SCALE = 0.85;
@@ -12,7 +12,7 @@ export const ROUTE_PADDING = 14;
 export const ADD_PANEL_WIDTH = 280;
 export const ADD_PANEL_HEIGHT = 300;
 export const MIN_NODE_VERTICAL_GAP = 80;
-export const MIN_NODE_HORIZONTAL_GAP = 40;
+export const MIN_NODE_HORIZONTAL_GAP = 80;
 
 // Types
 export type Point = { x: number; y: number };
@@ -31,8 +31,8 @@ export const drawRoundedRect = (ctx: CanvasRenderingContext2D, x: number, y: num
 };
 
 export const drawDefaultIcon = (ctx: CanvasRenderingContext2D, centerX: number, centerY: number, scale: number) => {
-  const outerRadius = 22 / scale;
-  const innerRadius = 14 / scale;
+  const outerRadius = 18 / scale;
+  const innerRadius = 10 / scale;
   const lineWidth = 2 / scale;
 
   ctx.strokeStyle = '#9ca3af';

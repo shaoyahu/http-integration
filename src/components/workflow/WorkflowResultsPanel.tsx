@@ -21,9 +21,10 @@ export const WorkflowResultsPanel: React.FC<WorkflowResultsPanelProps> = ({
   }
 
   return (
-    <div className="absolute top-0 right-0 bottom-0 w-[340px] bg-white border-l border-gray-200 overflow-hidden flex flex-col">
-      <div className="px-4 py-3 border-b border-gray-100 text-sm font-medium text-gray-700">
-        当前运行
+    <div className="absolute top-16 right-4 bottom-4 w-[340px] bg-white/95 backdrop-blur border border-gray-200 rounded-2xl shadow-lg overflow-hidden flex flex-col z-30">
+      <div className="px-4 py-3 border-b border-gray-100 text-sm font-medium text-gray-700 flex items-center justify-between">
+        <span>当前运行 ({results.length})</span>
+        <span className="text-xs text-gray-400">{results.filter(r => r.status === 'success').length}/{results.length} 成功</span>
       </div>
       <div className="flex-1 overflow-auto">
         <List

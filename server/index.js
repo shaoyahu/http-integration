@@ -498,13 +498,14 @@ const loadWorkflowStateForUser = async (db, userDocId) => {
   };
 };
 
-const persistWorkflowStateForUser = async (db, userDocId, workflows, selectedWorkflowId) => {
+const persistWorkflowStateForUser = async (db, userDocId, workflows, selectedWorkflowId, folders = []) => {
   const safeSelectedWorkflowId = getSafeSelectedWorkflowId(workflows, selectedWorkflowId);
   await db.collection(WORKFLOW_STATE_COLLECTION).updateOne(
     { _id: userDocId },
     {
       $set: {
         workflows,
+        folders,
         selectedWorkflowId: safeSelectedWorkflowId,
         updatedAt: new Date(),
       },
@@ -517,6 +518,7 @@ const persistWorkflowStateForUser = async (db, userDocId, workflows, selectedWor
 
   return {
     workflows,
+    folders,
     selectedWorkflowId: safeSelectedWorkflowId,
   };
 };
@@ -1142,10 +1144,10 @@ app.get('/api/workflows-state', requireAuth, requireAnyPermission(USER_PERMISSIO
     const userDocId = getUserStateDocId(req);
     const existing = await db.collection(WORKFLOW_STATE_COLLECTION).findOne({ _id: userDocId });
     if (!existing) {
-      return res.json({ workflows: [], selectedWorkflowId: null });
+      return res.json({ workflows: [], folders: [], selectedWorkflowId: null });
     }
-    const { workflows, selectedWorkflowId } = normalizeWorkflowState(existing);
-    return res.json({ workflows, selectedWorkflowId });
+    const { workflows, folders, selectedWorkflowId } = normalizeWorkflowState(existing);
+    return res.json({ workflows, folders, selectedWorkflowId });
   } catch (error) {
     return res.status(500).json({
       error: 'Failed to load workflow state',
@@ -1163,7 +1165,7 @@ app.patch('/api/workflows-state/selection', requireAuth, requireAnyPermission(US
     const userDocId = getUserStateDocId(req);
     const { state } = await loadWorkflowStateForUser(db, userDocId);
     const selectedWorkflowId = typeof req.body?.selectedWorkflowId === 'string' ? req.body.selectedWorkflowId : null;
-    const nextState = await persistWorkflowStateForUser(db, userDocId, state.workflows, selectedWorkflowId);
+    const nextState = await persistWorkflowStateForUser(db, userDocId, state.workflows, selectedWorkflowId, state.folders);
     return res.json({ ok: true, selectedWorkflowId: nextState.selectedWorkflowId });
   } catch (error) {
     return res.status(500).json({
@@ -1208,7 +1210,7 @@ app.put('/api/workflows-state/:workflowId', requireAuth, requireAnyPermission(US
     const selectedWorkflowId = typeof req.body?.selectedWorkflowId === 'string'
       ? req.body.selectedWorkflowId
       : state.selectedWorkflowId;
-    const nextState = await persistWorkflowStateForUser(db, userDocId, nextWorkflows, selectedWorkflowId);
+    const nextState = await persistWorkflowStateForUser(db, userDocId, nextWorkflows, selectedWorkflowId, state.folders);
     return res.json({ ok: true, workflowId, count: nextState.workflows.length });
   } catch (error) {
     return res.status(500).json({
@@ -1235,7 +1237,7 @@ app.delete('/api/workflows-state/:workflowId', requireAuth, requireAnyPermission
     const selectedWorkflowId = typeof req.body?.selectedWorkflowId === 'string'
       ? req.body.selectedWorkflowId
       : state.selectedWorkflowId;
-    const nextState = await persistWorkflowStateForUser(db, userDocId, nextWorkflows, selectedWorkflowId);
+    const nextState = await persistWorkflowStateForUser(db, userDocId, nextWorkflows, selectedWorkflowId, state.folders);
     return res.json({ ok: true, workflowId, count: nextState.workflows.length });
   } catch (error) {
     return res.status(500).json({
@@ -1253,7 +1255,7 @@ app.put('/api/workflows-state', requireAuth, requireAnyPermission(USER_PERMISSIO
   try {
     const normalized = normalizeWorkflowState(req.body || {});
     const userDocId = getUserStateDocId(req);
-    await persistWorkflowStateForUser(db, userDocId, normalized.workflows, normalized.selectedWorkflowId);
+    await persistWorkflowStateForUser(db, userDocId, normalized.workflows, normalized.selectedWorkflowId, normalized.folders);
     return res.json({ ok: true, count: normalized.workflows.length });
   } catch (error) {
     return res.status(500).json({
@@ -2196,92 +2198,100 @@ app.all('/api/echo', (req, res) => {
 });
 
 const startServer = async () => {
-  const db = await connectMongo();
-  if (db) {
-    const mongoState = getMongoState();
-    try {
-      await Promise.all(BUILTIN_PERMISSION_POINTS.map((permission) =>
-        db.collection(PERMISSION_POINTS_COLLECTION).updateOne(
-          { _id: permission._id },
-          {
-            $set: { name: permission.name, updatedAt: new Date() },
-            $setOnInsert: { createdAt: new Date() },
-          },
-          { upsert: true }
-        )
-      ));
-      await Promise.all(BUILTIN_IDENTITIES.map((identity) =>
-        db.collection(USER_IDENTITIES_COLLECTION).updateOne(
-          { _id: identity._id },
-          {
-            $set: {
-              name: identity.name,
-              permissions: identity.permissions,
-              updatedAt: new Date(),
+  try {
+    const db = await connectMongo();
+    if (db) {
+      const mongoState = getMongoState();
+      try {
+        await Promise.all(BUILTIN_PERMISSION_POINTS.map((permission) =>
+          db.collection(PERMISSION_POINTS_COLLECTION).updateOne(
+            { _id: permission._id },
+            {
+              $set: { name: permission.name, updatedAt: new Date() },
+              $setOnInsert: { createdAt: new Date() },
             },
-            $setOnInsert: {
-              createdAt: new Date(),
+            { upsert: true }
+          )
+        ));
+        await Promise.all(BUILTIN_IDENTITIES.map((identity) =>
+          db.collection(USER_IDENTITIES_COLLECTION).updateOne(
+            { _id: identity._id },
+            {
+              $set: {
+                name: identity.name,
+                permissions: identity.permissions,
+                updatedAt: new Date(),
+              },
+              $setOnInsert: {
+                createdAt: new Date(),
+              },
             },
-          },
-          { upsert: true }
-        )
-      ));
-      await db.collection(USERS_COLLECTION).createIndex({ username: 1 }, { unique: true });
-      await db.collection(USER_SESSIONS_COLLECTION).createIndex({ tokenHash: 1 }, { unique: true });
-      await db.collection(USER_SESSIONS_COLLECTION).createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
-      await db.collection(AUTH_CAPTCHAS_COLLECTION).createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
-      // 仅当不存在管理员时才创建初始 admin 账号
-      const existingAdmin = await db.collection(USERS_COLLECTION).findOne({
-        $or: [
-          { role: USER_ROLE.ADMIN },
-          { identityIds: BUILTIN_IDENTITY_ID.ADMIN },
-        ],
-      });
-      if (!existingAdmin) {
-        const adminExists = await db.collection(USERS_COLLECTION).findOne({ username: 'admin' });
-        const now = new Date();
-        if (!adminExists) {
-          await db.collection(USERS_COLLECTION).insertOne({
-            username: 'admin',
-            passwordHash: hashPassword('admin'),
-            role: USER_ROLE.ADMIN,
-            permissions: [...ADMIN_ALL_PERMISSIONS],
-            identityIds: [BUILTIN_IDENTITY_ID.ADMIN],
-            disabled: false,
-            mustChangePassword: true,
-            createdAt: now,
-            updatedAt: now,
-          });
-        } else {
-          // Legacy 'admin' user exists without admin role/identity — create a separate admin account
-          await db.collection(USERS_COLLECTION).insertOne({
-            username: 'system-admin',
-            passwordHash: hashPassword('system-admin'),
-            role: USER_ROLE.ADMIN,
-            permissions: [...ADMIN_ALL_PERMISSIONS],
-            identityIds: [BUILTIN_IDENTITY_ID.ADMIN],
-            disabled: false,
-            mustChangePassword: true,
-            createdAt: now,
-            updatedAt: now,
-          });
+            { upsert: true }
+          )
+        ));
+        await db.collection(USERS_COLLECTION).createIndex({ username: 1 }, { unique: true });
+        await db.collection(USER_SESSIONS_COLLECTION).createIndex({ tokenHash: 1 }, { unique: true });
+        await db.collection(USER_SESSIONS_COLLECTION).createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+        await db.collection(AUTH_CAPTCHAS_COLLECTION).createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+        // 仅当不存在管理员时才创建初始 admin 账号
+        const existingAdmin = await db.collection(USERS_COLLECTION).findOne({
+          $or: [
+            { role: USER_ROLE.ADMIN },
+            { identityIds: BUILTIN_IDENTITY_ID.ADMIN },
+          ],
+        });
+        if (!existingAdmin) {
+          const adminExists = await db.collection(USERS_COLLECTION).findOne({ username: 'admin' });
+          const now = new Date();
+          if (!adminExists) {
+            await db.collection(USERS_COLLECTION).insertOne({
+              username: 'admin',
+              passwordHash: hashPassword('admin'),
+              role: USER_ROLE.ADMIN,
+              permissions: [...ADMIN_ALL_PERMISSIONS],
+              identityIds: [BUILTIN_IDENTITY_ID.ADMIN],
+              disabled: false,
+              mustChangePassword: true,
+              createdAt: now,
+              updatedAt: now,
+            });
+          } else {
+            // Legacy 'admin' user exists without admin role/identity — create a separate admin account
+            await db.collection(USERS_COLLECTION).insertOne({
+              username: 'system-admin',
+              passwordHash: hashPassword('system-admin'),
+              role: USER_ROLE.ADMIN,
+              permissions: [...ADMIN_ALL_PERMISSIONS],
+              identityIds: [BUILTIN_IDENTITY_ID.ADMIN],
+              disabled: false,
+              mustChangePassword: true,
+              createdAt: now,
+              updatedAt: now,
+            });
+          }
         }
+      } catch (error) {
+        console.warn('[mongo] failed to create auth indexes:', error instanceof Error ? error.message : String(error));
       }
-    } catch (error) {
-      console.warn('[mongo] failed to create auth indexes:', error instanceof Error ? error.message : String(error));
+      console.log(`[mongo] connected: db=${mongoState.dbName}`);
+    } else {
+      const mongoState = getMongoState();
+      console.warn(`[mongo] not connected: ${mongoState.lastError || 'unknown error'}`);
     }
-    console.log(`[mongo] connected: db=${mongoState.dbName}`);
-  } else {
-    const mongoState = getMongoState();
-    console.warn(`[mongo] not connected: ${mongoState.lastError || 'unknown error'}`);
-  }
 
-  app.listen(PORT, () => {
-    console.log(`Server is running on http://localhost:${PORT}`);
-  });
+    app.listen(PORT, () => {
+      console.log(`Server is running on http://localhost:${PORT}`);
+    });
+  } catch (error) {
+    console.error('[server] failed to start:', error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
 };
 
-startServer();
+startServer().catch((error) => {
+  console.error('[server] unhandled startup error:', error instanceof Error ? error.message : String(error));
+  process.exit(1);
+});
 
 const gracefulShutdown = async () => {
   await disconnectMongo();

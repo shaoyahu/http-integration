@@ -17,10 +17,13 @@ import {
   DeploymentUnitOutlined,
   RetweetOutlined,
   ReloadOutlined,
+  ZoomInOutlined,
+  ZoomOutOutlined,
+  ExpandOutlined,
 } from '@ant-design/icons';
 import axios from 'axios';
 import { useWorkflowStore } from '../store/workflowStore';
-import type { Workflow, WorkflowRequest } from '../store/workflowStore';
+import type { Workflow, WorkflowRequest, WorkflowFolder } from '../store/workflowStore';
 import Editor from '@monaco-editor/react';
 import { applyPathMapping, parseBodyValue, setNestedValue } from '../utils/requestPayload';
 import {
@@ -54,9 +57,7 @@ import {
 } from '../utils/workflowEditor';
 import {
   WorkflowSidebar,
-  WorkflowToolbar,
   WorkflowNodeDetail,
-  WorkflowResultsPanel,
   WorkflowAddPanel,
   MIN_CANVAS_WIDTH,
   MIN_CANVAS_HEIGHT,
@@ -149,8 +150,9 @@ type WorkflowPersistRequest =
   | { type: 'delete'; snapshot: WorkflowStatePayload; workflowId: string }
   | { type: 'selection'; snapshot: WorkflowStatePayload };
 
-const buildWorkflowSnapshot = (state: { workflows: Workflow[]; selectedWorkflowId: string | null }): WorkflowStatePayload => ({
+const buildWorkflowSnapshot = (state: { workflows: Workflow[]; folders: WorkflowFolder[]; selectedWorkflowId: string | null }): WorkflowStatePayload => ({
   workflows: state.workflows,
+  folders: state.folders,
   selectedWorkflowId: state.selectedWorkflowId,
 });
 
@@ -282,6 +284,7 @@ const pushOutOfCollision = (
 export const WorkflowPage: React.FC = () => {
   const {
     workflows,
+    folders,
     selectedWorkflowId,
     setWorkflowState,
     addWorkflow,
@@ -292,6 +295,12 @@ export const WorkflowPage: React.FC = () => {
     removeEdge,
     updateWorkflowRequestInputValue,
     addEdge,
+    addFolder,
+    updateFolder,
+    deleteFolder,
+    reorderFolders,
+    toggleFolderExpanded,
+    moveWorkflowToFolder,
   } = useWorkflowStore();
 
   const [availableRequests, setAvailableRequests] = useState<WorkflowAvailableRequest[]>([]);
@@ -313,8 +322,8 @@ export const WorkflowPage: React.FC = () => {
   const [redoStack, setRedoStack] = useState<WorkflowStatePayload[]>([]);
 
   const currentSnapshot = React.useMemo(
-    () => buildWorkflowSnapshot({ workflows, selectedWorkflowId }),
-    [workflows, selectedWorkflowId]
+    () => buildWorkflowSnapshot({ workflows, folders, selectedWorkflowId }),
+    [workflows, folders, selectedWorkflowId]
   );
   const currentSerializedSnapshot = React.useMemo(
     () => serializeWorkflowSnapshot(currentSnapshot),
@@ -328,7 +337,7 @@ export const WorkflowPage: React.FC = () => {
   
   // Apply a snapshot to the store/state and update last saved refs
   const applySnapshot = useCallback((snapshot: WorkflowStatePayload) => {
-    setWorkflowState(snapshot.workflows, snapshot.selectedWorkflowId);
+    setWorkflowState(snapshot.workflows, snapshot.selectedWorkflowId, snapshot.folders);
     lastSavedSnapshotRef.current = snapshot;
     lastSavedSerializedRef.current = serializeWorkflowSnapshot(snapshot);
   }, [setWorkflowState]);
@@ -349,6 +358,8 @@ export const WorkflowPage: React.FC = () => {
     applySnapshot(next as unknown as WorkflowStatePayload);
   }, [redoStack, currentSnapshot, applySnapshot]);
   const [view, setView] = useState<{ scale: number; offsetX: number; offsetY: number }>({ scale: 1, offsetX: 0, offsetY: 0 });
+  const [zoomBadge, setZoomBadge] = useState<string | null>(null);
+  const zoomBadgeTimerRef = React.useRef<number | null>(null);
   const [canvasSize, setCanvasSize] = useState<{ width: number; height: number }>({ width: MIN_CANVAS_WIDTH, height: MIN_CANVAS_HEIGHT });
   const canvasSizeRef = React.useRef(canvasSize);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -359,6 +370,10 @@ export const WorkflowPage: React.FC = () => {
   const [workflowSiderCollapsed, setWorkflowSiderCollapsed] = useState(false);
   const [activeAssistTab, setActiveAssistTab] = useState<'requests' | 'search' | 'logs' | 'explain'>('requests');
   const [assistPanelOpen, setAssistPanelOpen] = useState(true);
+  const [assistPanelHeight, setAssistPanelHeight] = useState(520);
+  const assistPanelResizeRef = React.useRef<{ startY: number; startHeight: number } | null>(null);
+  const [runLogPanelHeight, setRunLogPanelHeight] = useState(480);
+  const runLogPanelResizeRef = React.useRef<{ startY: number; startHeight: number } | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [runLogs, setRunLogs] = useState<WorkflowRunLog[]>([]);
   const [selectedRunLog, setSelectedRunLog] = useState<WorkflowRunLog | null>(null);
@@ -366,6 +381,8 @@ export const WorkflowPage: React.FC = () => {
   const [runLogDrawerOpen, setRunLogDrawerOpen] = useState(false);
   const [draggingRequestKey, setDraggingRequestKey] = useState<string | null>(null);
   const [dropPreview, setDropPreview] = useState<{ x: number; y: number } | null>(null);
+  const [isDragOverDeleteZone, setIsDragOverDeleteZone] = useState(false);
+  const [isDraggingCanvasNode, setIsDraggingCanvasNode] = useState(false);
   const [isLoadingState, setIsLoadingState] = useState(true);
   const [isSavingState, setIsSavingState] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -486,7 +503,7 @@ export const WorkflowPage: React.FC = () => {
         if (cancelled) {
           return;
         }
-        setWorkflowState(data.workflows, data.selectedWorkflowId);
+        setWorkflowState(data.workflows, data.selectedWorkflowId, data.folders);
         setAvailableRequests(requestOptions);
         setSaveError(null);
       } catch (error) {
@@ -627,21 +644,17 @@ export const WorkflowPage: React.FC = () => {
 
   // Update canvas size based on container
   React.useEffect(() => {
-    // Delay to ensure container is rendered (container only exists when !isLoadingState && selectedWorkflow)
-    const timer = window.setTimeout(() => {
-      const container = canvasContainerRef.current;
-      if (!container) return;
-      const updateSize = () => {
-        const width = Math.max(MIN_CANVAS_WIDTH, container.clientWidth);
-        const height = Math.max(MIN_CANVAS_HEIGHT, container.clientHeight);
-        setCanvasSize({ width, height });
-      };
-      updateSize();
-      const observer = new ResizeObserver(updateSize);
-      observer.observe(container);
-      return () => observer.disconnect();
-    }, 0);
-    return () => window.clearTimeout(timer);
+    const container = canvasContainerRef.current;
+    if (!container) return;
+    const updateSize = () => {
+      const width = Math.max(MIN_CANVAS_WIDTH, container.clientWidth);
+      const height = Math.max(MIN_CANVAS_HEIGHT, container.clientHeight);
+      setCanvasSize({ width, height });
+    };
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(container);
+    return () => observer.disconnect();
   }, [selectedWorkflowId, isLoadingState, selectedWorkflow]);
 
   // Initialize node positions when workflow changes
@@ -1408,6 +1421,86 @@ export const WorkflowPage: React.FC = () => {
     fitViewToPositions(nodePositionsRef.current);
   }, [fitViewToPositions]);
 
+  const showZoomBadge = useCallback((scale: number) => {
+    if (zoomBadgeTimerRef.current) {
+      window.clearTimeout(zoomBadgeTimerRef.current);
+    }
+    setZoomBadge(`${Math.round(scale * 100)}%`);
+    zoomBadgeTimerRef.current = window.setTimeout(() => setZoomBadge(null), 1200);
+  }, []);
+
+  const handleAssistPanelResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    assistPanelResizeRef.current = { startY: e.clientY, startHeight: assistPanelHeight };
+    const handleMove = (moveEvent: MouseEvent) => {
+      if (!assistPanelResizeRef.current) return;
+      const delta = moveEvent.clientY - assistPanelResizeRef.current.startY;
+      const nextHeight = Math.min(
+        window.innerHeight - 200,
+        Math.max(200, assistPanelResizeRef.current.startHeight + delta)
+      );
+      setAssistPanelHeight(nextHeight);
+    };
+    const handleUp = () => {
+      assistPanelResizeRef.current = null;
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', handleUp);
+    };
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseup', handleUp);
+  }, [assistPanelHeight]);
+
+  const handleRunLogPanelResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    runLogPanelResizeRef.current = { startY: e.clientY, startHeight: runLogPanelHeight };
+    const handleMove = (moveEvent: MouseEvent) => {
+      if (!runLogPanelResizeRef.current) return;
+      const delta = runLogPanelResizeRef.current.startHeight - (moveEvent.clientY - runLogPanelResizeRef.current.startY);
+      const nextHeight = Math.min(
+        window.innerHeight - 200,
+        Math.max(200, delta)
+      );
+      setRunLogPanelHeight(nextHeight);
+    };
+    const handleUp = () => {
+      runLogPanelResizeRef.current = null;
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', handleUp);
+    };
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseup', handleUp);
+  }, [runLogPanelHeight]);
+
+  const handleZoomIn = useCallback(() => {
+    const nextScale = Math.min(2, view.scale * 1.1);
+    setView((prev) => {
+      const container = canvasContainerRef.current;
+      const viewWidth = container ? container.clientWidth / nextScale : canvasSize.width / nextScale;
+      const viewHeight = container ? container.clientHeight / nextScale : canvasSize.height / nextScale;
+      return {
+        scale: nextScale,
+        offsetX: clampOffset(prev.offsetX, viewWidth, canvasSize.width),
+        offsetY: clampOffset(prev.offsetY, viewHeight, canvasSize.height),
+      };
+    });
+    showZoomBadge(nextScale);
+  }, [view.scale, canvasContainerRef, canvasSize, clampOffset, setView, showZoomBadge]);
+
+  const handleZoomOut = useCallback(() => {
+    const nextScale = Math.max(0.5, view.scale * 0.9);
+    setView((prev) => {
+      const container = canvasContainerRef.current;
+      const viewWidth = container ? container.clientWidth / nextScale : canvasSize.width / nextScale;
+      const viewHeight = container ? container.clientHeight / nextScale : canvasSize.height / nextScale;
+      return {
+        scale: nextScale,
+        offsetX: clampOffset(prev.offsetX, viewWidth, canvasSize.width),
+        offsetY: clampOffset(prev.offsetY, viewHeight, canvasSize.height),
+      };
+    });
+    showZoomBadge(nextScale);
+  }, [view.scale, canvasContainerRef, canvasSize, clampOffset, setView, showZoomBadge]);
+
   React.useEffect(() => {
     if (!selectedWorkflow || !shouldResetViewOnWorkflowChangeRef.current) {
       return;
@@ -1423,6 +1516,7 @@ export const WorkflowPage: React.FC = () => {
   const openRunLogDetail = useCallback((log: WorkflowRunLog) => {
     setSelectedRunLog(log);
     setSelectedRunLogNodeId(getDefaultRunLogNodeId(log));
+    setAssistPanelOpen(false);
     setRunLogDrawerOpen(true);
   }, []);
 
@@ -1498,6 +1592,19 @@ export const WorkflowPage: React.FC = () => {
     dragRef.current.offsetX = x - pos.x;
     dragRef.current.offsetY = y - pos.y;
     dragRef.current.mode = 'drag';
+    setIsDraggingCanvasNode(true);
+
+    // Global mouseup to handle node drag ending outside canvas (e.g. on delete zone or elsewhere)
+    const globalMouseUp = () => {
+      window.removeEventListener('mouseup', globalMouseUp);
+      // Only act if the drag hasn't been finalized yet
+      if (dragRef.current.mode === 'drag' && dragRef.current.id) {
+        dragRef.current.id = null;
+        dragRef.current.mode = null;
+        setIsDraggingCanvasNode(false);
+      }
+    };
+    window.addEventListener('mouseup', globalMouseUp);
   };
 
   const handleCanvasMouseMove = (event: React.MouseEvent<HTMLCanvasElement>) => {
@@ -1602,6 +1709,7 @@ export const WorkflowPage: React.FC = () => {
     }
     dragRef.current.id = null;
     dragRef.current.mode = null;
+    setIsDraggingCanvasNode(false);
   };
 
   const handleCanvasDragOver = (event: React.DragEvent<HTMLDivElement>) => {
@@ -1775,18 +1883,42 @@ export const WorkflowPage: React.FC = () => {
     };
 
     drawRoundedRect(triggerPos.x, triggerPos.y, TRIGGER_WIDTH, TRIGGER_HEIGHT, 12);
-    ctx.fillStyle = '#ffffff';
+    const gradient = ctx.createLinearGradient(triggerPos.x, triggerPos.y, triggerPos.x, triggerPos.y + TRIGGER_HEIGHT);
+    gradient.addColorStop(0, '#ffffff');
+    gradient.addColorStop(1, '#f8fafc');
+    ctx.fillStyle = gradient;
     ctx.fill();
-    ctx.strokeStyle = '#d1d5db';
-    ctx.lineWidth = 1 / view.scale;
+    ctx.strokeStyle = '#e2e8f0';
+    ctx.lineWidth = 1.5 / view.scale;
     ctx.stroke();
-    ctx.fillStyle = '#111827';
-    ctx.font = '600 14px sans-serif';
-    ctx.fillText('手动触发器', triggerPos.x + 16, triggerPos.y + 34);
+    ctx.fillStyle = '#64748b';
+    ctx.fillRect(triggerPos.x + 12, triggerPos.y + TRIGGER_HEIGHT - 3, TRIGGER_WIDTH - 24, 2);
+    ctx.fillStyle = '#0ea5e9';
+    ctx.beginPath();
+    ctx.arc(triggerPos.x + 20, triggerPos.y + TRIGGER_HEIGHT / 2, 10, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    const px = triggerPos.x + 20;
+    const py = triggerPos.y + TRIGGER_HEIGHT / 2;
+    ctx.moveTo(px - 3, py - 5);
+    ctx.lineTo(px - 3, py + 5);
+    ctx.lineTo(px + 5, py);
+    ctx.closePath();
+    ctx.fill();
     if (!compactMode) {
-      ctx.fillStyle = '#6b7280';
-      ctx.font = '12px sans-serif';
-      ctx.fillText('点击顶部按钮运行', triggerPos.x + 16, triggerPos.y + 56);
+      ctx.fillStyle = '#1e293b';
+      ctx.font = '600 13px sans-serif';
+      ctx.fillText('手动触发器', triggerPos.x + 38, triggerPos.y + 28);
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = '400 11px sans-serif';
+      ctx.fillText('点击上方按钮开始执行', triggerPos.x + 38, triggerPos.y + 46);
+    } else {
+      ctx.fillStyle = '#1e293b';
+      ctx.font = '600 13px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('触发器', triggerPos.x + TRIGGER_WIDTH / 2, triggerPos.y + TRIGGER_HEIGHT / 2 + 4);
+      ctx.textAlign = 'left';
     }
 
     // Draw connections based on edges
@@ -1863,17 +1995,16 @@ export const WorkflowPage: React.FC = () => {
         const img = new Image();
         img.src = req.iconUrl;
         if (img.complete && img.naturalWidth > 0) {
-          const iconSize = 44 / view.scale;
+          const iconSize = 44 * view.scale;
           ctx.drawImage(img, centerX - iconSize / 2, centerY - iconSize / 2, iconSize, iconSize);
         } else {
           img.onload = () => {
-            const iconSize = 44 / view.scale;
+            const iconSize = 44 * view.scale;
             ctx.drawImage(img, centerX - iconSize / 2, centerY - iconSize / 2, iconSize, iconSize);
           };
           img.onerror = () => {
             drawDefaultIcon(centerX, centerY, view.scale);
           };
-          // Do not draw default icon here to avoid duplicate rendering
         }
       } else {
         drawDefaultIcon(centerX, centerY, view.scale);
@@ -1965,7 +2096,7 @@ export const WorkflowPage: React.FC = () => {
         ctx.stroke();
       }
     });
-  }, [selectedWorkflow, nodePositions, selectedNodeId, selectedEdgeId, view, canvasSize, triggerPos, hoveredNodeId, connectingFrom]);
+  }, [selectedWorkflow, nodePositions, selectedNodeId, selectedEdgeId, view, canvasSize, triggerPos, hoveredNodeId, connectingFrom, mousePos]);
 
   React.useEffect(() => {
     const canvas = canvasRef.current;
@@ -2022,6 +2153,7 @@ export const WorkflowPage: React.FC = () => {
     <>
       <WorkflowSidebar
         workflows={workflows}
+        folders={folders}
         selectedWorkflowId={selectedWorkflowId}
         isLoadingState={isLoadingState}
         databaseStatusColor={databaseStatusColor}
@@ -2036,9 +2168,15 @@ export const WorkflowPage: React.FC = () => {
         onAddWorkflow={addWorkflow}
         onDeleteWorkflow={deleteWorkflow}
         onRenameWorkflow={(id, name) => updateWorkflow(id, { name })}
+        onAddFolder={addFolder}
+        onRenameFolder={(id, name) => updateFolder(id, { name })}
+        onDeleteFolder={deleteFolder}
+        onReorderFolders={reorderFolders}
+        onToggleFolderExpanded={toggleFolderExpanded}
+        onMoveWorkflowToFolder={moveWorkflowToFolder}
       />
 
-      <Content className="flex-1 bg-[#f5f5f5] overflow-hidden !p-0 !relative">
+      <Content className="flex-1 min-h-0 bg-[#f5f5f5] overflow-hidden !p-0 !relative">
         {workflowSiderCollapsed && (
           <Button
             type="primary"
@@ -2079,9 +2217,6 @@ export const WorkflowPage: React.FC = () => {
                         <Tag color={saveStatusColor} className="m-0 rounded-full px-3 py-1">
                           {saveStatusText}
                         </Tag>
-                        {isAutoSaving ? (
-                          <span className="text-sm text-gray-600 ml-2" title="Auto-saving in background">Saving...</span>
-                        ) : null}
                         {saveError ? (
                           <Button size="small" icon={<ReloadOutlined />} onClick={handleRetrySave}>
                             重试保存
@@ -2106,11 +2241,8 @@ export const WorkflowPage: React.FC = () => {
                         { key: 'requests', label: '请求', icon: <ApiOutlined /> },
                         { key: 'search', label: '搜索', icon: <SearchOutlined /> },
                         { key: 'logs', label: '日志', icon: <FileSearchOutlined /> },
-                        { key: 'auto-layout', label: '自动排列', icon: <DeploymentUnitOutlined /> },
-                        { key: 'reset-view', label: '重置视角', icon: <RetweetOutlined /> },
-                        { key: 'explain', label: '流程解释', icon: <NodeIndexOutlined /> },
                       ].map((item) => {
-                        const isPanelItem = item.key === 'requests' || item.key === 'search' || item.key === 'logs' || item.key === 'explain';
+                        const isPanelItem = true;
                         const isActive = isPanelItem && assistPanelOpen && activeAssistTab === item.key;
 
                         return (
@@ -2119,12 +2251,76 @@ export const WorkflowPage: React.FC = () => {
                               type={isActive ? 'primary' : 'text'}
                               className="!w-10 !h-10 !flex !items-center !justify-center"
                               onClick={() => {
+                                if (assistPanelOpen && activeAssistTab === item.key) {
+                                  setAssistPanelOpen(false);
+                                  return;
+                                }
+                                setRunLogDrawerOpen(false);
+                                setActiveAssistTab(item.key as 'requests' | 'search' | 'logs' | 'explain');
+                                setAssistPanelOpen(true);
+                              }}
+                              icon={item.icon}
+                            />
+                          </Tooltip>
+                        );
+                      })}
+
+                      <div className="w-8 border-t border-gray-200" />
+
+                      {[
+                        { key: 'undo', label: '撤销', icon: <UndoOutlined />, disabled: undoStack.length === 0 },
+                        { key: 'redo', label: '重做', icon: <RedoOutlined />, disabled: redoStack.length === 0 },
+                        { key: 'auto-layout', label: '自动排列', icon: <DeploymentUnitOutlined /> },
+                        { key: 'reset-view', label: '重置视角', icon: <RetweetOutlined /> },
+                        { key: 'zoom-in', label: '放大', icon: <ZoomInOutlined /> },
+                        { key: 'zoom-out', label: '缩小', icon: <ZoomOutOutlined /> },
+                        { key: 'zoom-reset', label: '重置大小', icon: <ExpandOutlined /> },
+                        { key: 'explain', label: '流程解释', icon: <NodeIndexOutlined /> },
+                      ].map((item) => {
+                        const isPanelItem = item.key === 'explain';
+                        const isActive = isPanelItem && assistPanelOpen && activeAssistTab === item.key;
+
+                        return (
+                          <Tooltip key={item.key} title={item.label} placement="right">
+                            <Button
+                              type={isActive ? 'primary' : 'text'}
+                              className="!w-10 !h-10 !flex !items-center !justify-center"
+                              disabled={'disabled' in item ? item.disabled : false}
+                              onClick={() => {
+                                if (item.key === 'undo') {
+                                  handleUndo();
+                                  return;
+                                }
+                                if (item.key === 'redo') {
+                                  handleRedo();
+                                  return;
+                                }
                                 if (item.key === 'auto-layout') {
                                   handleAutoLayout();
                                   return;
                                 }
                                 if (item.key === 'reset-view') {
                                   handleResetView();
+                                  return;
+                                }
+                                if (item.key === 'zoom-in') {
+                                  handleZoomIn();
+                                  return;
+                                }
+                                if (item.key === 'zoom-out') {
+                                  handleZoomOut();
+                                  return;
+                                }
+                                if (item.key === 'zoom-reset') {
+                                  const container = canvasContainerRef.current;
+                                  const vpW = container ? container.clientWidth : canvasSize.width;
+                                  const vpH = container ? container.clientHeight : canvasSize.height;
+                                  setView({
+                                    scale: 1,
+                                    offsetX: triggerPos.x + TRIGGER_WIDTH / 2 - vpW / 2,
+                                    offsetY: Math.max(0, triggerPos.y - WORKFLOW_VIEW_TOP_INSET),
+                                  });
+                                  showZoomBadge(1);
                                   return;
                                 }
                                 if (assistPanelOpen && activeAssistTab === item.key) {
@@ -2142,8 +2338,11 @@ export const WorkflowPage: React.FC = () => {
                     </div>
 
                     {assistPanelOpen ? (
-                      <div className="w-[340px] max-h-[min(720px,calc(100vh-220px))] bg-white/95 backdrop-blur border border-gray-200 rounded-2xl shadow-lg flex flex-col overflow-hidden">
-                        <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+                      <div
+                        className="w-[340px] bg-white/95 backdrop-blur border border-gray-200 rounded-2xl shadow-lg flex flex-col overflow-hidden"
+                        style={{ height: assistPanelHeight }}
+                      >
+                        <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between flex-shrink-0">
                           <div className="font-medium text-gray-800">
                             {{
                               requests: '请求列表',
@@ -2240,30 +2439,122 @@ export const WorkflowPage: React.FC = () => {
                         ) : null}
 
                         {activeAssistTab === 'logs' ? (
-                          <div className="flex-1 overflow-auto p-3 space-y-2">
-                            {runLogs.map((log) => (
-                              <div
-                                key={log.id}
-                                onClick={() => openRunLogDetail(log)}
-                                className="border border-gray-200 rounded-xl p-3 bg-white hover:border-blue-300 cursor-pointer"
-                              >
-                                <div className="flex items-center justify-between gap-2">
-                                  <div className="text-sm font-medium text-gray-800">
-                                    {new Date(log.startedAt).toLocaleString()}
-                                  </div>
-                                  <Tag color={log.status === 'success' ? 'success' : 'error'} className="m-0">
-                                    {log.status === 'success' ? '成功' : '失败'}
-                                  </Tag>
+                          selectedRunLog ? (
+                            <div className="flex-1 flex flex-col overflow-hidden">
+                              <div className="px-3 py-2 border-b border-gray-100 flex items-center gap-2 flex-shrink-0">
+                                <Button type="text" size="small" icon={<LeftOutlined />} onClick={() => setSelectedRunLog(null)} />
+                                <span className="text-xs text-gray-500">返回列表</span>
+                              </div>
+                              <div className="flex-1 flex overflow-hidden">
+                                <div className="w-[100px] flex-shrink-0 border-r border-gray-100 overflow-auto py-1.5 px-1.5 space-y-1">
+                                  {selectedRunLog.nodes.map((node, index) => (
+                                    <div
+                                      key={node.requestId}
+                                      onClick={() => setSelectedRunLogNodeId(node.requestId)}
+                                      className={`rounded-md p-1.5 cursor-pointer transition-all text-[10px] ${
+                                        selectedRunLogNodeId === node.requestId
+                                          ? 'bg-blue-50 border border-blue-300'
+                                          : 'bg-gray-50 border border-transparent hover:bg-gray-100'
+                                      }`}
+                                    >
+                                      <div className="font-medium text-gray-700 truncate">{index + 1}. {node.requestName}</div>
+                                      <div className={node.status === 'success' ? 'text-green-600' : 'text-red-500'}>{node.statusCode ?? '--'}</div>
+                                    </div>
+                                  ))}
                                 </div>
-                                <div className="text-xs text-gray-500 mt-1">
-                                  耗时 {getDurationText(log.durationMs)} · {log.nodes.length} 个节点
+                                <div className="flex-1 min-w-0 overflow-auto p-2.5 space-y-2.5">
+                                  {selectedRunLogNode ? (
+                                    <>
+                                      <div className="flex items-center gap-2 text-[10px]">
+                                        <Tag color="blue" className="m-0">{selectedRunLogNode.method}</Tag>
+                                        <Tag color={selectedRunLogNode.status === 'success' ? 'success' : 'error'} className="m-0">{selectedRunLogNode.statusCode ?? '--'}</Tag>
+                                        <span className="text-gray-500">{getDurationText(selectedRunLogNode.durationMs)}</span>
+                                      </div>
+                                      <div className="bg-gray-50 rounded-md p-1.5">
+                                        <div className="text-[10px] text-gray-500 mb-0.5">URL</div>
+                                        <div className="text-[10px] text-gray-700 font-mono break-all leading-relaxed">{selectedRunLogNode.url || '--'}</div>
+                                      </div>
+                                      {Object.keys(selectedRunLogNode.requestInfo?.params || {}).length > 0 && (
+                                        <div>
+                                          <div className="text-[10px] font-semibold text-gray-600 mb-1">查询参数</div>
+                                          <div className="border border-gray-200 rounded overflow-hidden">
+                                            <Editor
+                                              height="60px"
+                                              defaultLanguage="json"
+                                              value={formatResponseData(selectedRunLogNode.requestInfo?.params || {})}
+                                              theme="vs"
+                                              options={{ minimap: { enabled: false }, fontSize: 10, scrollBeyondLastLine: false, wordWrap: 'on', readOnly: true, lineNumbers: 'off', folding: false }}
+                                            />
+                                          </div>
+                                        </div>
+                                      )}
+                                      {Object.keys(selectedRunLogNode.requestInfo?.headers || {}).length > 0 && (
+                                        <div>
+                                          <div className="text-[10px] font-semibold text-gray-600 mb-1">请求头</div>
+                                          <div className="border border-gray-200 rounded overflow-hidden">
+                                            <Editor
+                                              height="60px"
+                                              defaultLanguage="json"
+                                              value={formatResponseData(selectedRunLogNode.requestInfo?.headers || {})}
+                                              theme="vs"
+                                              options={{ minimap: { enabled: false }, fontSize: 10, scrollBeyondLastLine: false, wordWrap: 'on', readOnly: true, lineNumbers: 'off', folding: false }}
+                                            />
+                                          </div>
+                                        </div>
+                                      )}
+                                      <div>
+                                        <div className="text-[10px] font-semibold text-gray-600 mb-1">响应</div>
+                                        <div className="border border-gray-200 rounded overflow-hidden">
+                                          <Editor
+                                            height="120px"
+                                            defaultLanguage="json"
+                                            value={formatResponseData(selectedRunLogNode.responseData)}
+                                            theme="vs"
+                                            options={{ minimap: { enabled: false }, fontSize: 10, scrollBeyondLastLine: false, wordWrap: 'on', readOnly: true, lineNumbers: 'off', folding: false }}
+                                          />
+                                        </div>
+                                      </div>
+                                      {selectedRunLogNode.error && (
+                                        <div className="bg-red-50 border border-red-200 rounded p-1.5 text-[10px] text-red-600">
+                                          {selectedRunLogNode.error}
+                                        </div>
+                                      )}
+                                    </>
+                                  ) : (
+                                    <div className="flex items-center justify-center h-full text-gray-400 text-xs">选择节点查看</div>
+                                  )}
                                 </div>
                               </div>
-                            ))}
-                            {runLogs.length === 0 ? (
-                              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无日志" />
-                            ) : null}
-                          </div>
+                            </div>
+                          ) : (
+                            <div className="flex-1 overflow-auto p-3 space-y-2">
+                              {runLogs.map((log) => (
+                                <div
+                                  key={log.id}
+                                  onClick={() => {
+                                    setSelectedRunLog(log);
+                                    setSelectedRunLogNodeId(getDefaultRunLogNodeId(log));
+                                  }}
+                                  className="border border-gray-200 rounded-xl p-3 bg-white hover:border-blue-300 cursor-pointer"
+                                >
+                                  <div className="flex items-center justify-between gap-2">
+                                    <div className="text-sm font-medium text-gray-800">
+                                      {new Date(log.startedAt).toLocaleString()}
+                                    </div>
+                                    <Tag color={log.status === 'success' ? 'success' : 'error'} className="m-0">
+                                      {log.status === 'success' ? '成功' : '失败'}
+                                    </Tag>
+                                  </div>
+                                  <div className="text-xs text-gray-500 mt-1">
+                                    耗时 {getDurationText(log.durationMs)} · {log.nodes.length} 个节点
+                                  </div>
+                                </div>
+                              ))}
+                              {runLogs.length === 0 ? (
+                                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无日志" />
+                              ) : null}
+                            </div>
+                          )
                         ) : null}
 
                         {activeAssistTab === 'explain' ? (
@@ -2312,21 +2603,25 @@ export const WorkflowPage: React.FC = () => {
                             </div>
                           </div>
                         ) : null}
+
+                        {/* Resize handle */}
+                        <div
+                          className="flex-shrink-0 h-3 flex items-center justify-center cursor-ns-resize group"
+                          onMouseDown={handleAssistPanelResizeStart}
+                        >
+                          <div className="w-8 h-1 rounded-full bg-gray-300 group-hover:bg-blue-400 transition-colors" />
+                        </div>
                       </div>
                     ) : null}
                   </div>
 
-                  <div className="flex items-center gap-2 mb-2">
-                    <Button type="default" size="small" onClick={handleUndo} disabled={undoStack.length === 0} icon={<UndoOutlined />} title="Undo" />
-                    <Button type="default" size="small" onClick={handleRedo} disabled={redoStack.length === 0} icon={<RedoOutlined />} title="Redo" />
-                  </div>
-                  <WorkflowToolbar
-                    view={view}
-                    setView={setView}
-                    canvasContainerRef={canvasContainerRef}
-                    canvasSize={canvasSize}
-                    clampOffset={clampOffset}
-                  />
+                  {zoomBadge && (
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-30">
+                      <div className="bg-black/60 text-white text-2xl font-semibold px-6 py-3 rounded-xl">
+                        {zoomBadge}
+                      </div>
+                    </div>
+                  )}
 
                   <canvas
                     ref={canvasRef}
@@ -2336,9 +2631,14 @@ export const WorkflowPage: React.FC = () => {
                     onMouseDown={handleCanvasMouseDown}
                     onMouseMove={handleCanvasMouseMove}
                     onMouseUp={handleCanvasMouseUp}
-                    onMouseLeave={handleCanvasMouseUp}
+                    onMouseLeave={(e) => {
+                      // Don't finalize node drag on leave — delete zone or global listener handles it
+                      if (dragRef.current.mode === 'drag') return;
+                      handleCanvasMouseUp(e);
+                    }}
                     style={{ touchAction: 'none', cursor: spaceDown ? 'grab' : 'default' }}
                   />
+
 
                   {draggingRequestKey && dropPreview ? (
                     <div
@@ -2352,6 +2652,51 @@ export const WorkflowPage: React.FC = () => {
                       <div className="w-24 h-24 rounded-2xl border-2 border-dashed border-blue-400 bg-blue-100/60 flex items-center justify-center text-xs text-blue-700">
                         放到这里
                       </div>
+                    </div>
+                  ) : null}
+
+                  {(draggingRequestKey || isDraggingCanvasNode) ? (
+                    <div
+                      className={`absolute bottom-6 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 px-6 py-3 rounded-2xl border-2 border-dashed transition-colors ${
+                        isDragOverDeleteZone
+                          ? 'border-red-400 bg-red-100/90 text-red-600 scale-110'
+                          : 'border-gray-300 bg-white/90 text-gray-500'
+                      }`}
+                      onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setIsDragOverDeleteZone(true); }}
+                      onDragLeave={() => setIsDragOverDeleteZone(false)}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setDraggingRequestKey(null);
+                        setDropPreview(null);
+                        setIsDragOverDeleteZone(false);
+                      }}
+                      onMouseUp={() => {
+                        if (isDraggingCanvasNode && dragRef.current.id && selectedWorkflow) {
+                          saveToUndo(buildWorkflowSnapshot(useWorkflowStore.getState()));
+                          removeRequestFromWorkflow(selectedWorkflow.id, dragRef.current.id);
+                          setSelectedNodeId(null);
+                          setSelectedEdgeId(null);
+                          message.success('节点已删除');
+                          dragRef.current.id = null;
+                          dragRef.current.mode = null;
+                          setIsDraggingCanvasNode(false);
+                          setIsDragOverDeleteZone(false);
+                        }
+                      }}
+                      onMouseEnter={() => {
+                        if (isDraggingCanvasNode) setIsDragOverDeleteZone(true);
+                      }}
+                      onMouseLeave={() => {
+                        if (isDraggingCanvasNode) setIsDragOverDeleteZone(false);
+                      }}
+                    >
+                      <DeleteOutlined />
+                      <span className="text-sm font-medium">
+                        {isDragOverDeleteZone
+                          ? (draggingRequestKey ? '松开取消放置' : '松开删除节点')
+                          : (draggingRequestKey ? '拖到此处取消' : '拖到此处删除')}
+                      </span>
                     </div>
                   ) : null}
 
@@ -2375,13 +2720,6 @@ export const WorkflowPage: React.FC = () => {
                     />
                   ) : null}
                 </div>
-
-                <WorkflowResultsPanel
-                  results={results}
-                  onSelectResult={setSelectedResult}
-                  onDetailOpen={() => setDetailDrawerOpen(true)}
-                  onImportOutputFields={handleImportOutputFields}
-                />
 
                 <WorkflowNodeDetail
                   selectedNodeId={selectedNodeId}
@@ -2522,123 +2860,184 @@ export const WorkflowPage: React.FC = () => {
           )}
         </Drawer>
 
-        <Drawer
-          open={runLogDrawerOpen}
-          onClose={() => setRunLogDrawerOpen(false)}
-          placement="right"
-          width={960}
-          title={selectedRunLog ? `${selectedRunLog.workflowName} · ${new Date(selectedRunLog.startedAt).toLocaleString()}` : '运行日志'}
-        >
-          {selectedRunLog ? (
-            <div className="h-full flex gap-4">
-              <div className="w-[260px] flex-shrink-0 border-r border-gray-100 pr-4 overflow-auto">
-                <div className="space-y-2">
-                  {selectedRunLog.nodes.map((node, index) => (
-                    <div
-                      key={node.requestId}
-                      onClick={() => setSelectedRunLogNodeId(node.requestId)}
-                      className={`rounded-xl border p-3 cursor-pointer ${
-                        selectedRunLogNodeId === node.requestId
-                          ? 'border-blue-400 bg-blue-50'
-                          : 'border-gray-200 hover:border-blue-300'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="text-sm font-medium text-gray-800 truncate">
-                          第 {index + 1} 步 · {node.requestName}
-                        </div>
-                        <Tag color={node.status === 'success' ? 'success' : 'error'} className="m-0">
-                          {node.status === 'success' ? '成功' : '失败'}
-                        </Tag>
-                      </div>
-                      <div className="text-xs text-gray-500 mt-1">
-                        状态码 {node.statusCode ?? '--'} · 耗时 {getDurationText(node.durationMs)}
-                      </div>
-                    </div>
-                  ))}
+        {runLogDrawerOpen && selectedRunLog && activeAssistTab !== 'logs' && (
+          <div 
+            className="absolute left-[72px] top-[104px] bottom-4 w-[520px] bg-white/98 backdrop-blur-xl border border-gray-200 rounded-2xl shadow-2xl z-40 flex flex-col overflow-hidden"
+            style={{ height: runLogPanelHeight }}
+          >
+            <div className="px-4 py-2.5 border-b border-gray-100 flex items-center justify-between flex-shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="text-sm font-semibold text-gray-800">
+                  {selectedRunLog.workflowName}
                 </div>
+                <div className="flex items-center gap-2">
+                  <Tag color={selectedRunLog.status === 'success' ? 'success' : 'error'} className="m-0 text-[10px]">
+                    {selectedRunLog.status === 'success' ? '成功' : '失败'}
+                  </Tag>
+                  <span className="text-[11px] text-gray-500">
+                    {selectedRunLog.nodes.length} 节点 · {getDurationText(selectedRunLog.durationMs)}
+                  </span>
+                </div>
+              </div>
+              <Button
+                type="text"
+                size="small"
+                icon={<CloseOutlined />}
+                onClick={() => setRunLogDrawerOpen(false)}
+              />
+            </div>
+
+            <div className="flex-1 flex overflow-hidden">
+              <div className="w-[120px] flex-shrink-0 border-r border-gray-100 overflow-auto py-2 px-2 space-y-1">
+                {selectedRunLog.nodes.map((node, index) => (
+                  <div
+                    key={node.requestId}
+                    onClick={() => setSelectedRunLogNodeId(node.requestId)}
+                    className={`rounded-lg p-2 cursor-pointer transition-all ${
+                      selectedRunLogNodeId === node.requestId
+                        ? 'bg-blue-50 border border-blue-300 shadow-sm'
+                        : 'bg-gray-50 border border-transparent hover:bg-gray-100'
+                    }`}
+                  >
+                    <div className="text-[11px] font-medium text-gray-800 truncate">
+                      {index + 1}. {node.requestName}
+                    </div>
+                    <div className={`text-[10px] mt-0.5 ${
+                      node.status === 'success' ? 'text-green-600' : 'text-red-500'
+                    }`}>
+                      {node.statusCode ?? '--'}
+                    </div>
+                  </div>
+                ))}
               </div>
 
               <div className="flex-1 min-w-0 overflow-auto">
                 {selectedRunLogNode ? (
-                  <div className="space-y-4">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <div className="text-lg font-semibold text-gray-800">{selectedRunLogNode.requestName}</div>
-                        <div className="text-sm text-gray-500 mt-1">
-                          {selectedRunLogNode.method} {selectedRunLogNode.url || '--'}
+                  <div className="p-3 space-y-3">
+                    <div className="grid grid-cols-4 gap-2">
+                      <div className="bg-gray-50 rounded-lg p-2 text-center">
+                        <div className="text-[10px] text-gray-500 mb-0.5">方法</div>
+                        <Tag className="text-[10px] m-0" color="blue">{selectedRunLogNode.method}</Tag>
+                      </div>
+                      <div className="bg-gray-50 rounded-lg p-2 text-center">
+                        <div className="text-[10px] text-gray-500 mb-0.5">状态</div>
+                        <Tag className="text-[10px] m-0" color={selectedRunLogNode.status === 'success' ? 'success' : 'error'}>
+                          {selectedRunLogNode.statusCode ?? '--'}
+                        </Tag>
+                      </div>
+                      <div className="bg-gray-50 rounded-lg p-2 text-center col-span-2">
+                        <div className="text-[10px] text-gray-500 mb-0.5">耗时</div>
+                        <div className="text-[11px] font-medium text-gray-700">{getDurationText(selectedRunLogNode.durationMs)}</div>
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="text-[11px] font-semibold text-gray-700 mb-1.5 flex items-center gap-2">
+                        <span className="w-1 h-3 bg-blue-500 rounded-full" />
+                        请求路径
+                      </div>
+                      <div className="bg-gray-50 rounded-lg p-2 border border-gray-100">
+                        <div className="text-[11px] text-gray-700 font-mono break-all leading-relaxed">
+                          {selectedRunLogNode.url || '--'}
                         </div>
                       </div>
-                      <div className="text-sm text-gray-500">
-                        状态码 {selectedRunLogNode.statusCode ?? '--'} · 耗时 {getDurationText(selectedRunLogNode.durationMs)}
+                    </div>
+
+                    {Object.keys(selectedRunLogNode.requestInfo?.params || {}).length > 0 && (
+                      <div>
+                        <div className="text-[11px] font-semibold text-gray-700 mb-1.5 flex items-center gap-2">
+                          <span className="w-1 h-3 bg-emerald-500 rounded-full" />
+                          查询参数
+                        </div>
+                        <div className="border border-gray-200 rounded-lg overflow-hidden">
+                          <Editor
+                            height="80px"
+                            defaultLanguage="json"
+                            value={formatResponseData(selectedRunLogNode.requestInfo?.params || {})}
+                            theme="vs"
+                            options={{ minimap: { enabled: false }, fontSize: 11, scrollBeyondLastLine: false, wordWrap: 'on', readOnly: true, lineNumbers: 'off', folding: false }}
+                          />
+                        </div>
                       </div>
-                    </div>
+                    )}
 
-                    <div>
-                      <div className="text-sm font-semibold text-gray-700 mb-2">实际入参</div>
-                      <div className="border border-gray-200 rounded bg-white">
-                        <Editor
-                          height="180px"
-                          defaultLanguage="json"
-                          value={formatResponseData(selectedRunLogNode.requestInfo?.resolvedInputs || {})}
-                          theme="vs"
-                          options={{
-                            minimap: { enabled: false },
-                            fontSize: 13,
-                            scrollBeyondLastLine: false,
-                            wordWrap: 'on',
-                            readOnly: true,
-                          }}
-                        />
+                    {Object.keys(selectedRunLogNode.requestInfo?.headers || {}).length > 0 && (
+                      <div>
+                        <div className="text-[11px] font-semibold text-gray-700 mb-1.5 flex items-center gap-2">
+                          <span className="w-1 h-3 bg-amber-500 rounded-full" />
+                          请求头
+                        </div>
+                        <div className="border border-gray-200 rounded-lg overflow-hidden">
+                          <Editor
+                            height="80px"
+                            defaultLanguage="json"
+                            value={formatResponseData(selectedRunLogNode.requestInfo?.headers || {})}
+                            theme="vs"
+                            options={{ minimap: { enabled: false }, fontSize: 11, scrollBeyondLastLine: false, wordWrap: 'on', readOnly: true, lineNumbers: 'off', folding: false }}
+                          />
+                        </div>
                       </div>
-                    </div>
+                    )}
+
+                    {selectedRunLogNode.requestInfo?.body && (
+                      <div>
+                        <div className="text-[11px] font-semibold text-gray-700 mb-1.5 flex items-center gap-2">
+                          <span className="w-1 h-3 bg-purple-500 rounded-full" />
+                          请求体
+                        </div>
+                        <div className="border border-gray-200 rounded-lg overflow-hidden">
+                          <Editor
+                            height="100px"
+                            defaultLanguage="json"
+                            value={typeof selectedRunLogNode.requestInfo.body === 'string' 
+                              ? selectedRunLogNode.requestInfo.body 
+                              : formatResponseData(selectedRunLogNode.requestInfo.body)}
+                            theme="vs"
+                            options={{ minimap: { enabled: false }, fontSize: 11, scrollBeyondLastLine: false, wordWrap: 'on', readOnly: true, lineNumbers: 'off', folding: false }}
+                          />
+                        </div>
+                      </div>
+                    )}
 
                     <div>
-                      <div className="text-sm font-semibold text-gray-700 mb-2">请求快照</div>
-                      <pre className="bg-gray-100 rounded p-3 text-xs whitespace-pre-wrap break-all">
-                        {buildCurl(
-                          selectedRunLogNode.requestInfo.url,
-                          selectedRunLogNode.requestInfo.method,
-                          selectedRunLogNode.requestInfo.params || {},
-                          selectedRunLogNode.requestInfo.body
-                        )}
-                      </pre>
-                    </div>
-
-                    <div>
-                      <div className="text-sm font-semibold text-gray-700 mb-2">响应快照</div>
-                      <div className="border border-gray-200 rounded bg-white">
+                      <div className="text-[11px] font-semibold text-gray-700 mb-1.5 flex items-center gap-2">
+                        <span className="w-1 h-3 bg-green-500 rounded-full" />
+                        响应内容
+                      </div>
+                      <div className="border border-gray-200 rounded-lg overflow-hidden">
                         <Editor
-                          height="320px"
+                          height="160px"
                           defaultLanguage="json"
                           value={formatResponseData(selectedRunLogNode.responseData)}
                           theme="vs"
-                          options={{
-                            minimap: { enabled: false },
-                            fontSize: 13,
-                            scrollBeyondLastLine: false,
-                            wordWrap: 'on',
-                            readOnly: true,
-                          }}
+                          options={{ minimap: { enabled: false }, fontSize: 11, scrollBeyondLastLine: false, wordWrap: 'on', readOnly: true, lineNumbers: 'off', folding: false }}
                         />
                       </div>
                     </div>
 
-                    {selectedRunLogNode.error ? (
-                      <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
-                        {selectedRunLogNode.error}
+                    {selectedRunLogNode.error && (
+                      <div className="bg-red-50 border border-red-200 rounded-lg p-2.5">
+                        <div className="text-[11px] font-semibold text-red-600 mb-1">错误信息</div>
+                        <div className="text-[11px] text-red-500 whitespace-pre-wrap">{selectedRunLogNode.error}</div>
                       </div>
-                    ) : null}
+                    )}
                   </div>
                 ) : (
-                  <Empty description="暂无节点详情" />
+                  <div className="flex items-center justify-center h-full text-gray-400 text-sm">
+                    选择节点查看详情
+                  </div>
                 )}
               </div>
+
+              <div 
+                className="flex-shrink-0 w-3 cursor-ns-resize flex items-center justify-center group hover:bg-gray-50 transition-colors"
+                onMouseDown={handleRunLogPanelResizeStart}
+              >
+                <div className="w-1.5 h-6 rounded-full bg-gray-200 group-hover:bg-blue-400 transition-colors" />
+              </div>
             </div>
-          ) : (
-            <Empty description="暂无日志详情" />
-          )}
-        </Drawer>
+          </div>
+        )}
       </Content>
     </>
   );

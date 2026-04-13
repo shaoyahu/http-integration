@@ -108,20 +108,40 @@ export const useAdminStore = create<AdminState>((set, get) => ({
     }
   },
   createUser: async (username: string, identityIds: string[]) => {
-    await createAdminUser({ username: username.trim(), identityIds });
-    await get().fetchUsers();
+    try {
+      await createAdminUser({ username: username.trim(), identityIds });
+      await get().fetchUsers();
+    } catch (error) {
+      set({ usersError: error instanceof Error ? error.message : '创建用户失败' });
+      throw error;
+    }
   },
   toggleUserStatus: async (userId: string, disabled: boolean) => {
-    await updateAdminUserStatus(userId, disabled);
-    await get().fetchUsers();
+    try {
+      await updateAdminUserStatus(userId, disabled);
+      await get().fetchUsers();
+    } catch (error) {
+      set({ usersError: error instanceof Error ? error.message : '更新用户状态失败' });
+      throw error;
+    }
   },
   updateUserIdentities: async (userId: string, identityIds: string[]) => {
-    await updateAdminUserIdentities(userId, identityIds);
-    await get().fetchUsers();
+    try {
+      await updateAdminUserIdentities(userId, identityIds);
+      await get().fetchUsers();
+    } catch (error) {
+      set({ usersError: error instanceof Error ? error.message : '更新用户身份失败' });
+      throw error;
+    }
   },
   deleteUser: async (userId: string) => {
-    await deleteAdminUser(userId);
-    await get().fetchUsers();
+    try {
+      await deleteAdminUser(userId);
+      await get().fetchUsers();
+    } catch (error) {
+      set({ usersError: error instanceof Error ? error.message : '删除用户失败' });
+      throw error;
+    }
   },
 
   // Identities
@@ -141,15 +161,30 @@ export const useAdminStore = create<AdminState>((set, get) => ({
     }
   },
   createIdentity: async (name: string, permissionIds: UserPermission[]) => {
-    await createAdminIdentity({ name: name.trim(), permissionIds });
-    await get().fetchIdentities();
+    try {
+      await createAdminIdentity({ name: name.trim(), permissionIds });
+      await get().fetchIdentities();
+    } catch (error) {
+      set({ identitiesError: error instanceof Error ? error.message : '创建身份失败' });
+      throw error;
+    }
   },
   updateIdentity: async (identityId: string, name: string, permissionIds: UserPermission[]) => {
-    await updateAdminIdentity(identityId, { name: name.trim(), permissionIds });
-    await get().fetchIdentities();
+    try {
+      await updateAdminIdentity(identityId, { name: name.trim(), permissionIds });
+      await get().fetchIdentities();
+    } catch (error) {
+      set({ identitiesError: error instanceof Error ? error.message : '更新身份失败' });
+      throw error;
+    }
   },
   deleteIdentity: async (identityId: string) => {
-    await deleteAdminIdentity(identityId);
-    await get().fetchIdentities();
+    try {
+      await deleteAdminIdentity(identityId);
+      await get().fetchIdentities();
+    } catch (error) {
+      set({ identitiesError: error instanceof Error ? error.message : '删除身份失败' });
+      throw error;
+    }
   },
 }));

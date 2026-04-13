@@ -57,7 +57,7 @@ const RequestBasicInfo: React.FC<Props> = React.memo((props) => {
         </div>
         <div>
           <div className="text-sm font-medium text-gray-700 mb-1">请求方法</div>
-          <Select value={draftMethod} style={{ width: 120 }} onChange={onMethodChange as any}>
+          <Select value={draftMethod} style={{ width: 120 }} onChange={(v) => onMethodChange(v as string)}>
             <Select.Option value="GET">GET</Select.Option>
             <Select.Option value="POST">POST</Select.Option>
             <Select.Option value="PUT">PUT</Select.Option>

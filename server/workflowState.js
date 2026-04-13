@@ -66,6 +66,7 @@ export const normalizeWorkflow = (workflow = {}, index = 0) => {
   return {
     id: typeof workflow.id === 'string' && workflow.id.trim() ? workflow.id : `${Date.now()}-${index}`,
     name: typeof workflow.name === 'string' ? workflow.name : `工作流 ${index + 1}`,
+    folderId: workflow.folderId || null,
     requests,
     edges,
     createdAt: typeof workflow.createdAt === 'number' ? workflow.createdAt : Date.now(),
@@ -80,15 +81,25 @@ export const getSafeSelectedWorkflowId = (workflows = [], selectedWorkflowId = n
     : (workflows[0]?.id || null)
 );
 
+export const normalizeWorkflowFolder = (folder = {}, index = 0) => ({
+  id: typeof folder.id === 'string' && folder.id.trim() ? folder.id : `folder-${Date.now()}-${index}`,
+  name: typeof folder.name === 'string' ? folder.name : `文件夹 ${index + 1}`,
+  expanded: Boolean(folder.expanded),
+});
+
 export const normalizeWorkflowState = (payload = {}) => {
   const workflows = Array.isArray(payload.workflows)
     ? payload.workflows.map((workflow, index) => normalizeWorkflow(workflow, index))
+    : [];
+  const folders = Array.isArray(payload.folders)
+    ? payload.folders.map((folder, index) => normalizeWorkflowFolder(folder, index))
     : [];
   const selectedWorkflowId = typeof payload.selectedWorkflowId === 'string' ? payload.selectedWorkflowId : null;
   const safeSelectedWorkflowId = getSafeSelectedWorkflowId(workflows, selectedWorkflowId);
 
   return {
     workflows,
+    folders,
     selectedWorkflowId: safeSelectedWorkflowId,
   };
 };

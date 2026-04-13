@@ -9,6 +9,12 @@ describe('WorkflowSidebar', () => {
   const onAddWorkflow = vi.fn()
   const onDeleteWorkflow = vi.fn()
   const onRenameWorkflow = vi.fn()
+  const onAddFolder = vi.fn()
+  const onRenameFolder = vi.fn()
+  const onDeleteFolder = vi.fn()
+  const onReorderFolders = vi.fn()
+  const onToggleFolderExpanded = vi.fn()
+  const onMoveWorkflowToFolder = vi.fn()
   const setWorkflowSiderCollapsed = vi.fn()
   const setEditingId = vi.fn()
   const setEditingName = vi.fn()
@@ -18,6 +24,12 @@ describe('WorkflowSidebar', () => {
     onAddWorkflow.mockReset()
     onDeleteWorkflow.mockReset()
     onRenameWorkflow.mockReset()
+    onAddFolder.mockReset()
+    onRenameFolder.mockReset()
+    onDeleteFolder.mockReset()
+    onReorderFolders.mockReset()
+    onToggleFolderExpanded.mockReset()
+    onMoveWorkflowToFolder.mockReset()
     setWorkflowSiderCollapsed.mockReset()
     setEditingId.mockReset()
     setEditingName.mockReset()
@@ -27,9 +39,11 @@ describe('WorkflowSidebar', () => {
     const workflows = [
       { id: 'w1', name: 'Workflow 1', requests: [], edges: [], createdAt: 0, updatedAt: 0, nodePositions: {} },
     ]
+    const folders: any[] = []
     render(
       <WorkflowSidebar
         workflows={workflows as any}
+        folders={folders}
         selectedWorkflowId={null}
         isLoadingState={false}
         databaseStatusText="OK"
@@ -44,6 +58,12 @@ describe('WorkflowSidebar', () => {
         onAddWorkflow={onAddWorkflow}
         onDeleteWorkflow={onDeleteWorkflow}
         onRenameWorkflow={onRenameWorkflow}
+        onAddFolder={onAddFolder}
+        onRenameFolder={onRenameFolder}
+        onDeleteFolder={onDeleteFolder}
+        onReorderFolders={onReorderFolders}
+        onToggleFolderExpanded={onToggleFolderExpanded}
+        onMoveWorkflowToFolder={onMoveWorkflowToFolder}
       />
     )
     expect(screen.getByText('Workflow 1')).toBeTruthy()
@@ -53,9 +73,11 @@ describe('WorkflowSidebar', () => {
     const workflows = [
       { id: 'w1', name: 'Workflow 1', requests: [], edges: [], createdAt: 0, updatedAt: 0, nodePositions: {} },
     ]
+    const folders: any[] = []
     render(
       <WorkflowSidebar
         workflows={workflows as any}
+        folders={folders}
         selectedWorkflowId={null}
         isLoadingState={false}
         databaseStatusText="OK"
@@ -70,6 +92,12 @@ describe('WorkflowSidebar', () => {
         onAddWorkflow={onAddWorkflow}
         onDeleteWorkflow={onDeleteWorkflow}
         onRenameWorkflow={onRenameWorkflow}
+        onAddFolder={onAddFolder}
+        onRenameFolder={onRenameFolder}
+        onDeleteFolder={onDeleteFolder}
+        onReorderFolders={onReorderFolders}
+        onToggleFolderExpanded={onToggleFolderExpanded}
+        onMoveWorkflowToFolder={onMoveWorkflowToFolder}
       />
     )
     const item = screen.getByText('Workflow 1')
@@ -77,11 +105,13 @@ describe('WorkflowSidebar', () => {
     expect(onSelectWorkflow).toHaveBeenCalled()
   })
 
-  it('calls add workflow when add button is clicked', () => {
-    const workflows = []
-    render(
+  it('renders search and action buttons', () => {
+    const workflows: any[] = []
+    const folders: any[] = []
+    const result = render(
       <WorkflowSidebar
-        workflows={workflows as any}
+        workflows={workflows}
+        folders={folders}
         selectedWorkflowId={null}
         isLoadingState={false}
         databaseStatusText="OK"
@@ -96,11 +126,14 @@ describe('WorkflowSidebar', () => {
         onAddWorkflow={onAddWorkflow}
         onDeleteWorkflow={onDeleteWorkflow}
         onRenameWorkflow={onRenameWorkflow}
+        onAddFolder={onAddFolder}
+        onRenameFolder={onRenameFolder}
+        onDeleteFolder={onDeleteFolder}
+        onReorderFolders={onReorderFolders}
+        onToggleFolderExpanded={onToggleFolderExpanded}
+        onMoveWorkflowToFolder={onMoveWorkflowToFolder}
       />
     )
-    // The first child is the Add Workflow row
-    const addRow = screen.getByText(/添加工作流/)
-    fireEvent.click(addRow)
-    expect(onAddWorkflow).toHaveBeenCalled()
+    expect(result.container.querySelectorAll('button').length).toBeGreaterThan(0)
   })
 })

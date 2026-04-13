@@ -386,8 +386,8 @@ export const autoLayoutWorkflowNodes = (
 
       requestIds.forEach((requestId, index) => {
         positions[requestId] = {
-          x: Math.max(0, startX + index * (nodeWidth + horizontalGap)),
-          y: Math.max(0, snapPosition(y, snapSize)),
+          x: startX + index * (nodeWidth + horizontalGap),
+          y,
         };
       });
     });
@@ -406,8 +406,8 @@ export const autoLayoutWorkflowNodes = (
       const column = index % columns;
       const row = Math.floor(index / columns);
       positions[requestId] = {
-        x: Math.max(0, gridStartX + column * (nodeWidth + horizontalGap)),
-        y: Math.max(0, snapPosition(disconnectedStartY + row * (nodeHeight + verticalGap), snapSize)),
+        x: gridStartX + column * (nodeWidth + horizontalGap),
+        y: disconnectedStartY + row * (nodeHeight + verticalGap),
       };
     });
   }

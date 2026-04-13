@@ -492,7 +492,7 @@ export const RequestEditor = React.memo(function RequestEditor(): JSX.Element {
         method={selectedRequest?.method || 'GET'}
         url={selectedRequest?.url || ''}
         onNameChange={(v) => updateRequest(selectedRequest!.id, { name: v })}
-        onMethodChange={(v) => updateRequest(selectedRequest!.id, { method: v as any })}
+        onMethodChange={(v) => updateRequest(selectedRequest!.id, { method: v as typeof selectedRequest.method })}
         onUrlChange={(v) => updateRequest(selectedRequest!.id, { url: v })}
         onImport={() => {}}
         onExport={() => {}}
@@ -827,7 +827,7 @@ export const RequestEditor = React.memo(function RequestEditor(): JSX.Element {
             method={selectedRequest.method}
             url={selectedRequest.url}
             onNameChange={(v) => updateRequest(selectedRequest.id, { name: v })}
-            onMethodChange={(v) => updateRequest(selectedRequest.id, { method: v as any })}
+            onMethodChange={(v) => updateRequest(selectedRequest.id, { method: v as typeof selectedRequest.method })}
             onUrlChange={(v) => updateRequest(selectedRequest.id, { url: v })}
             onImport={() => {}}
             onExport={() => {}}

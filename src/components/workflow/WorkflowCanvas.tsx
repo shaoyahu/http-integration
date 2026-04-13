@@ -228,19 +228,46 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
     // Trigger node
     drawRoundedRect(ctx, triggerPos.x, triggerPos.y, TRIGGER_WIDTH, TRIGGER_HEIGHT, 12);
-    ctx.fillStyle = '#ffffff';
+    const gradient = ctx.createLinearGradient(triggerPos.x, triggerPos.y, triggerPos.x, triggerPos.y + TRIGGER_HEIGHT);
+    gradient.addColorStop(0, '#ffffff');
+    gradient.addColorStop(1, '#f8fafc');
+    ctx.fillStyle = gradient;
     ctx.fill();
-    ctx.strokeStyle = '#d1d5db';
-    ctx.lineWidth = 1 / view.scale;
+    ctx.strokeStyle = '#e2e8f0';
+    ctx.lineWidth = 1.5 / view.scale;
     ctx.stroke();
-    ctx.fillStyle = '#111827';
-    ctx.font = '600 14px sans-serif';
-    ctx.fillText('手动触发器', triggerPos.x + 16, triggerPos.y + 34);
+    ctx.fillStyle = '#64748b';
+    ctx.fillRect(triggerPos.x + 12, triggerPos.y + TRIGGER_HEIGHT - 3, TRIGGER_WIDTH - 24, 2);
+    ctx.fillStyle = '#0ea5e9';
+    ctx.beginPath();
+    ctx.arc(triggerPos.x + 20, triggerPos.y + TRIGGER_HEIGHT / 2, 10, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    const px = triggerPos.x + 20;
+    const py = triggerPos.y + TRIGGER_HEIGHT / 2;
+    ctx.moveTo(px - 3, py - 5);
+    ctx.lineTo(px - 3, py + 5);
+    ctx.lineTo(px + 5, py);
+    ctx.closePath();
+    ctx.fill();
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
     if (!compactMode) {
-      ctx.fillStyle = '#6b7280';
-      ctx.font = '12px sans-serif';
-      ctx.fillText('点击顶部按钮运行', triggerPos.x + 16, triggerPos.y + 56);
+      ctx.fillStyle = '#1e293b';
+      ctx.font = '600 13px sans-serif';
+      ctx.fillText('手动触发器', triggerPos.x + 38, triggerPos.y + TRIGGER_HEIGHT / 2 - 6);
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = '400 11px sans-serif';
+      ctx.fillText('点击上方按钮开始执行', triggerPos.x + 38, triggerPos.y + TRIGGER_HEIGHT / 2 + 10);
+    } else {
+      ctx.fillStyle = '#1e293b';
+      ctx.font = '600 13px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('触发器', triggerPos.x + TRIGGER_WIDTH / 2, triggerPos.y + TRIGGER_HEIGHT / 2);
     }
+    ctx.textAlign = 'start';
+    ctx.textBaseline = 'alphabetic';
 
     // Draw connections based on edges
     const edges = selectedWorkflow.edges || [];
@@ -323,7 +350,7 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         const img = new Image();
         img.src = req.iconUrl;
         if (img.complete && img.naturalWidth > 0) {
-          const iconSize = 44 / view.scale;
+          const iconSize = 36 * view.scale;
           ctx.drawImage(img, centerX - iconSize / 2, centerY - iconSize / 2, iconSize, iconSize);
         } else {
           drawDefaultIcon(ctx, centerX, centerY, view.scale);

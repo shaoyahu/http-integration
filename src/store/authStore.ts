@@ -70,24 +70,27 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
   initializeAuth: async () => {
     const { initialized, initializing } = get();
-    if (initialized || initializing) {
+    if (initialized) {
+      return;
+    }
+    if (initAuthPromise) {
+      await initAuthPromise;
+      return;
+    }
+    if (initializing) {
       return;
     }
     set({ initializing: true });
-    // Ensure only a single fetch runs across concurrent calls
-    if (!initAuthPromise) {
-      initAuthPromise = (async () => {
-        try {
-          const user = await fetchCurrentUser();
-          set({ user: normalizeAuthUser(user), initialized: true, initializing: false });
-        } catch {
-          set({ user: null, initialized: true, initializing: false });
-        } finally {
-          initAuthPromise = null;
-        }
-      })();
-    }
+    initAuthPromise = (async () => {
+      try {
+        const user = await fetchCurrentUser();
+        set({ user: normalizeAuthUser(user), initialized: true, initializing: false });
+      } catch {
+        set({ user: null, initialized: true, initializing: false });
+      } finally {
+        initAuthPromise = null;
+      }
+    })();
     await initAuthPromise;
-    return;
   },
 }));

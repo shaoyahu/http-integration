@@ -5,6 +5,12 @@ export type { HttpParam, ParamField, OutputField }
 
 const NODE_WIDTH = 80
 
+export interface WorkflowFolder {
+  id: string
+  name: string
+  expanded: boolean
+}
+
 export interface WorkflowEdge {
   id: string
   sourceId: string
@@ -14,6 +20,7 @@ export interface WorkflowEdge {
 export interface Workflow {
   id: string
   name: string
+  folderId?: string | null
   requests: WorkflowRequest[]
   edges: WorkflowEdge[]
   createdAt: number
@@ -38,9 +45,10 @@ export interface WorkflowRequest {
 
 interface WorkflowStore {
   workflows: Workflow[]
+  folders: WorkflowFolder[]
   selectedWorkflowId: string | null
-  setWorkflowState: (workflows: Workflow[], selectedWorkflowId: string | null) => void
-  addWorkflow: () => void
+  setWorkflowState: (workflows: Workflow[], selectedWorkflowId: string | null, folders?: WorkflowFolder[]) => void
+  addWorkflow: (folderId?: string | null) => void
   updateWorkflow: (id: string, updates: Partial<Workflow>) => void
   deleteWorkflow: (id: string) => void
   addRequestToWorkflow: (workflowId: string, request: Partial<WorkflowRequest>) => void
@@ -53,19 +61,27 @@ interface WorkflowStore {
   addEdge: (workflowId: string, sourceId: string, targetId: string) => void
   removeEdge: (workflowId: string, edgeId: string) => void
   updateEdge: (workflowId: string, edgeId: string, sourceId: string, targetId: string) => void
+  addFolder: () => void
+  updateFolder: (id: string, updates: Partial<WorkflowFolder>) => void
+  deleteFolder: (id: string) => void
+  reorderFolders: (oldIndex: number, newIndex: number) => void
+  toggleFolderExpanded: (id: string) => void
+  moveWorkflowToFolder: (workflowId: string, folderId: string | null) => void
 }
 
 export const useWorkflowStore = create<WorkflowStore>((set) => ({
   workflows: [],
+  folders: [],
   selectedWorkflowId: null,
-  setWorkflowState: (workflows, selectedWorkflowId) =>
+  setWorkflowState: (workflows, selectedWorkflowId, folders = []) =>
     set({
       workflows: Array.isArray(workflows) ? workflows : [],
+      folders: Array.isArray(folders) ? folders : [],
       selectedWorkflowId: selectedWorkflowId && workflows.some((wf) => wf.id === selectedWorkflowId)
         ? selectedWorkflowId
         : (workflows[0]?.id || null),
     }),
-  addWorkflow: () =>
+  addWorkflow: (folderId = null) =>
     set((state) => {
       const now = Date.now()
       const workflowId = `${now}-${Math.random().toString(36).slice(2, 8)}`
@@ -75,6 +91,7 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
           {
             id: workflowId,
             name: `工作流 ${state.workflows.length + 1}`,
+            folderId,
             requests: [],
             edges: [],
             createdAt: now,
@@ -160,34 +177,29 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
       // Extract possible output fields from response
       const outputFields: OutputField[] = [];
       const visitedPaths = new Set<string>();
+      const MAX_DEPTH = 20;
 
-      const traverse = (obj: unknown, path: string = '') => {
-        if (typeof obj !== 'object' || obj === null) return;
+      const traverse = (obj: unknown, path: string = '', depth: number = 0) => {
+        if (typeof obj !== 'object' || obj === null || depth > MAX_DEPTH) return;
 
         for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
           const currentPath = path ? `${path}.${key}` : key;
+          if (visitedPaths.has(currentPath)) continue;
+          visitedPaths.add(currentPath);
 
           if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-            // Also add the object itself as a valid output field (not just leaf nodes)
-            if (!visitedPaths.has(currentPath)) {
-              outputFields.push({
-                name: key,
-                path: currentPath,
-                description: `从响应中提取的参数: ${currentPath}`,
-              });
-              visitedPaths.add(currentPath);
-            }
-            traverse(value, currentPath);
-          } else if (typeof value !== 'object' || value === null) {
-            // Leaf nodes (primitives and array elements)
-            if (!visitedPaths.has(currentPath)) {
-              outputFields.push({
-                name: key,
-                path: currentPath,
-                description: `从响应中提取的参数: ${currentPath}`,
-              });
-              visitedPaths.add(currentPath);
-            }
+            outputFields.push({
+              name: key,
+              path: currentPath,
+              description: `从响应中提取的参数: ${currentPath}`,
+            });
+            traverse(value, currentPath, depth + 1);
+          } else {
+            outputFields.push({
+              name: key,
+              path: currentPath,
+              description: `从响应中提取的参数: ${currentPath}`,
+            });
           }
         }
       };
@@ -265,6 +277,10 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
       const workflow = state.workflows.find((wf) => wf.id === workflowId);
       if (!workflow) return state;
 
+      const sourceExists = sourceId === 'trigger' || workflow.requests.some((req) => req.id === sourceId);
+      const targetExists = workflow.requests.some((req) => req.id === targetId);
+      if (!sourceExists || !targetExists) return state;
+
       const edges = workflow.edges || [];
       // Check for duplicate edge in both directions
       const existingEdge = edges.find(
@@ -311,6 +327,55 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
               ),
             }
           : wf
+      ),
+    })),
+  addFolder: () =>
+    set((state) => {
+      const folderId = `folder-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      return {
+        folders: [
+          ...state.folders,
+          {
+            id: folderId,
+            name: `文件夹 ${state.folders.length + 1}`,
+            expanded: true,
+          },
+        ],
+      }
+    }),
+  updateFolder: (id, updates) =>
+    set((state) => ({
+      folders: state.folders.map((folder) =>
+        folder.id === id ? { ...folder, ...updates } : folder
+      ),
+    })),
+  deleteFolder: (id) =>
+    set((state) => {
+      const normalizedFolders = state.folders.filter((folder) => folder.id !== id)
+      return {
+        folders: normalizedFolders,
+        workflows: state.workflows.map((wf) =>
+          wf.folderId === id ? { ...wf, folderId: null } : wf
+        ),
+      }
+    }),
+  reorderFolders: (oldIndex, newIndex) =>
+    set((state) => {
+      const newFolders = [...state.folders]
+      const [movedFolder] = newFolders.splice(oldIndex, 1)
+      newFolders.splice(newIndex, 0, movedFolder)
+      return { folders: newFolders }
+    }),
+  toggleFolderExpanded: (id) =>
+    set((state) => ({
+      folders: state.folders.map((folder) =>
+        folder.id === id ? { ...folder, expanded: !folder.expanded } : folder
+      ),
+    })),
+  moveWorkflowToFolder: (workflowId, folderId) =>
+    set((state) => ({
+      workflows: state.workflows.map((wf) =>
+        wf.id === workflowId ? { ...wf, folderId } : wf
       ),
     })),
 }))
