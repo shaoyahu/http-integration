@@ -1,6 +1,6 @@
 # HTTP Integration Client
 
-现代化 HTTP 请求管理与可视化工作流编辑器。
+现代化 HTTP 请求管理与可视化工作流编辑器。 author：syh
 
 ## 主要功能
 
