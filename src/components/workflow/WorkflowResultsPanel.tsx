@@ -39,7 +39,14 @@ export const WorkflowResultsPanel: React.FC<WorkflowResultsPanelProps> = ({
                 }}
               >
                 <div className="flex items-center justify-between mb-2 gap-2">
-                  <span className="font-medium truncate">{result.requestName}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium truncate">{result.requestName}</span>
+                    {result.downstreamRequestIds && result.downstreamRequestIds.length > 1 && (
+                      <span className="px-1.5 py-0.5 rounded text-xs bg-blue-100 text-blue-700">
+                        分支 ×{result.downstreamRequestIds.length}
+                      </span>
+                    )}
+                  </div>
                   <div className="flex items-center gap-2">
                     <span
                       className={`px-2 py-1 rounded text-xs font-medium ${

@@ -88,6 +88,7 @@ export interface WorkflowRunNodeLog {
   startedAt: string
   finishedAt: string
   upstreamRequestIds: string[]
+  downstreamRequestIds: string[]
   requestInfo: WorkflowRuntimeRequestInfo
   responseData?: unknown
   error?: string

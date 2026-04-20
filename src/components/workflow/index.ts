@@ -14,6 +14,7 @@ export const TRIGGER_WIDTH = 180
 export const TRIGGER_HEIGHT = 64
 export const MIN_NODE_VERTICAL_GAP = 80
 export const MIN_NODE_HORIZONTAL_GAP = 80
+export const DEFAULT_ICON_URL = '/icons/default-icon.png'
 
 // Simple utilities (basic in-file implementations to keep existing usage working).
 export const clampOffset = (offset: number, _viewportSize: number, _contentSize: number) => {

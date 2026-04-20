@@ -70,6 +70,7 @@ import {
   clampOffset,
   snapToGrid,
   MIN_NODE_HORIZONTAL_GAP,
+  DEFAULT_ICON_URL,
 } from '../components/workflow';
 import { renderCanvasFrame } from '../components/workflow/WorkflowCanvasRenderer';
 
@@ -858,6 +859,12 @@ export const WorkflowPage: React.FC = () => {
       const workflowResults: WorkflowRunNodeLog[] = [];
       const requestOutputMap = new Map<string, Record<string, unknown>>();
       const analysis = analyzeWorkflow(latestWorkflow);
+      console.log('=== downstreamByRequestId ===');
+      Object.entries(analysis.downstreamByRequestId).forEach(([id, downs]) => {
+        if (downs && downs.length > 0) {
+          console.log(id, '->', downs);
+        }
+      });
       const executionOrder = analysis.orderedRequestIds;
 
       for (const requestId of executionOrder) {
@@ -998,6 +1005,7 @@ export const WorkflowPage: React.FC = () => {
             startedAt: requestStartedAt.toISOString(),
             finishedAt: requestFinishedAt.toISOString(),
             upstreamRequestIds: analysis.upstreamByRequestId[request.id] || [],
+            downstreamRequestIds: analysis.downstreamByRequestId[request.id] || [],
             requestInfo: {
               url,
               method: request.method,
@@ -1024,6 +1032,7 @@ export const WorkflowPage: React.FC = () => {
             startedAt: requestStartedAt.toISOString(),
             finishedAt: requestFinishedAt.toISOString(),
             upstreamRequestIds: analysis.upstreamByRequestId[request.id] || [],
+            downstreamRequestIds: analysis.downstreamByRequestId[request.id] || [],
             requestInfo: {
               url,
               method: request.method,
@@ -1841,20 +1850,6 @@ export const WorkflowPage: React.FC = () => {
       ctx.closePath();
     };
 
-    const drawDefaultIcon = (centerX: number, centerY: number, scale: number) => {
-      const outerRadius = 22 / scale;
-      const innerRadius = 14 / scale;
-      const lineWidth = 2 / scale;
-      ctx.strokeStyle = '#9ca3af';
-      ctx.lineWidth = lineWidth;
-      ctx.beginPath();
-      ctx.arc(centerX, centerY, outerRadius, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.arc(centerX, centerY, innerRadius, 0, Math.PI * 2);
-      ctx.stroke();
-    };
-
     const drawCurveConnection = (
       start: Point,
       end: Point,
@@ -1991,23 +1986,14 @@ export const WorkflowPage: React.FC = () => {
       const centerX = pos.x + NODE_SIZE / 2;
       const centerY = pos.y + NODE_SIZE / 2;
 
-      if (req.iconUrl) {
+      const iconUrl = req.iconUrl || DEFAULT_ICON_URL;
+      if (iconUrl) {
         const img = new Image();
-        img.src = req.iconUrl;
+        img.src = iconUrl;
         if (img.complete && img.naturalWidth > 0) {
-          const iconSize = 44 * view.scale;
+          const iconSize = 36;
           ctx.drawImage(img, centerX - iconSize / 2, centerY - iconSize / 2, iconSize, iconSize);
-        } else {
-          img.onload = () => {
-            const iconSize = 44 * view.scale;
-            ctx.drawImage(img, centerX - iconSize / 2, centerY - iconSize / 2, iconSize, iconSize);
-          };
-          img.onerror = () => {
-            drawDefaultIcon(centerX, centerY, view.scale);
-          };
         }
-      } else {
-        drawDefaultIcon(centerX, centerY, view.scale);
       }
 
       const nameX = pos.x + NODE_SIZE + 8;
@@ -2762,7 +2748,14 @@ export const WorkflowPage: React.FC = () => {
           {selectedResult && (
             <div className="space-y-4">
               <div className="flex items-center justify-between gap-3">
-                <div className="text-lg font-semibold text-gray-800 truncate">{selectedResult.requestName}</div>
+                <div className="flex items-center gap-2">
+                  <div className="text-lg font-semibold text-gray-800 truncate">{selectedResult.requestName}</div>
+                  {selectedResult.downstreamRequestIds && selectedResult.downstreamRequestIds.length > 1 && (
+                    <span className="px-2 py-0.5 rounded text-xs bg-blue-100 text-blue-700">
+                      分支 ×{selectedResult.downstreamRequestIds.length}
+                    </span>
+                  )}
+                </div>
                 <div className="flex items-center gap-3">
                   <div className="text-sm text-gray-500 whitespace-nowrap">
                     状态码 {selectedResult.statusCode ?? '--'} · 耗时 {getDurationText(selectedResult.durationMs)}
@@ -2902,6 +2895,11 @@ export const WorkflowPage: React.FC = () => {
                     <div className="text-[11px] font-medium text-gray-800 truncate">
                       {index + 1}. {node.requestName}
                     </div>
+                    {node.downstreamRequestIds && node.downstreamRequestIds.length > 1 && (
+                      <div className="text-[10px] text-blue-600 font-medium">
+                        分支 ×{node.downstreamRequestIds.length}
+                      </div>
+                    )}
                     <div className={`text-[10px] mt-0.5 ${
                       node.status === 'success' ? 'text-green-600' : 'text-red-500'
                     }`}>

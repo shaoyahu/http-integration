@@ -121,6 +121,9 @@ const normalizeWorkflowRunNodeLog = (node: any): WorkflowRunNodeLog => ({
   upstreamRequestIds: Array.isArray(node?.upstreamRequestIds)
     ? node.upstreamRequestIds.filter((requestId: unknown) => typeof requestId === 'string')
     : [],
+  downstreamRequestIds: Array.isArray(node?.downstreamRequestIds)
+    ? node.downstreamRequestIds.filter((requestId: unknown) => typeof requestId === 'string')
+    : [],
   requestInfo: {
     url: typeof node?.requestInfo?.url === 'string' ? node.requestInfo.url : (typeof node?.url === 'string' ? node.url : ''),
     method: typeof node?.requestInfo?.method === 'string' ? node.requestInfo.method : (typeof node?.method === 'string' ? node.method : 'GET'),

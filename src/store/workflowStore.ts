@@ -206,8 +206,11 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
 
       traverse(response);
 
-      const newRequests = workflow.requests.map((req) =>
-        req.id === requestId ? { ...req, outputFields: [...req.outputFields, ...outputFields] } : req
+      const existingOutputFieldPaths = new Set(req.outputFields.map((f) => f.path));
+      const newFields = outputFields.filter((f) => !existingOutputFieldPaths.has(f.path));
+      if (newFields.length === 0) return state;
+      const newRequests = workflow.requests.map((r) =>
+        r.id === requestId ? { ...r, outputFields: [...r.outputFields, ...newFields] } : r
       );
 
       return {
@@ -247,6 +250,9 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
         id: newId,
         name: `${originalRequest.name} (副本)`,
         inputValues: { ...originalRequest.inputValues },
+        inputFields: originalRequest.inputFields.map((f) => ({ ...f })),
+        outputFields: originalRequest.outputFields.map((f) => ({ ...f })),
+        apiMappings: (originalRequest.apiMappings || []).map((m) => ({ ...m })),
       };
 
       const newRequests = [...workflow.requests];
@@ -282,10 +288,9 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
       if (!sourceExists || !targetExists) return state;
 
       const edges = workflow.edges || [];
-      // Check for duplicate edge in both directions
+      // Check for duplicate edge (same source and target)
       const existingEdge = edges.find(
-        (e) => (e.sourceId === sourceId && e.targetId === targetId) ||
-               (e.sourceId === targetId && e.targetId === sourceId)
+        (e) => e.sourceId === sourceId && e.targetId === targetId
       );
       if (existingEdge) return state;
 

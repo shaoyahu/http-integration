@@ -2101,17 +2101,9 @@ app.all('/api/proxy', requireAuth, requireAnyPermission(USER_PERMISSION.REQUEST_
       return res.status(400).json({ error: 'Access to localhost is not allowed' });
     }
 
-    try {
-      const blockedAddress = await findBlockedResolvedAddress(hostname);
-      if (blockedAddress) {
-        return res.status(400).json({ error: 'Access to private/internal IPs is not allowed' });
-      }
-    } catch (dnsError) {
-      if (dnsError instanceof Error) {
-        console.warn(`[proxy] DNS lookup skipped for ${hostname}: ${dnsError.message}`);
-      } else {
-        console.warn(`[proxy] DNS lookup skipped for ${hostname}: ${String(dnsError)}`);
-      }
+    const blockedAddress = await findBlockedResolvedAddress(hostname);
+    if (blockedAddress) {
+      return res.status(400).json({ error: 'Access to private/internal IPs is not allowed' });
     }
 
     const lib = targetUrl.startsWith('https') ? https : http;

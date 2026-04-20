@@ -3,7 +3,7 @@ import type { HttpParam, ParamField, OutputField, ApiMapping } from '../types/wo
 
 export type { HttpParam, ParamField, OutputField, ApiMapping }
 
-const DEFAULT_ICON_URL = 'https://lf3-static.bytednsdoc.com/obj/eden-cn/ofzeh7ffnuhog/默认图标.png'
+const DEFAULT_ICON_URL = '/icons/default-icon.png'
 
 export interface RequestFolder {
   id: string

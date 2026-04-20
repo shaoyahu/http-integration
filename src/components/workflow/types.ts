@@ -2,6 +2,7 @@
 export const NODE_SIZE = 64;
 export const NODE_WIDTH = NODE_SIZE;
 export const NODE_HEIGHT = NODE_SIZE;
+export const DEFAULT_ICON_URL = '/icons/default-icon.png';
 export const TRIGGER_WIDTH = 180;
 export const TRIGGER_HEIGHT = 64;
 export const MIN_CANVAS_WIDTH = 0;

@@ -11,9 +11,9 @@ import {
   MIN_CANVAS_WIDTH,
   MIN_CANVAS_HEIGHT,
   drawRoundedRect,
-  drawDefaultIcon,
   drawCurveConnection,
   clampOffset,
+  DEFAULT_ICON_URL,
 } from './types';
 
 interface WorkflowCanvasProps {
@@ -346,17 +346,14 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
       const centerX = pos.x + NODE_SIZE / 2;
       const centerY = pos.y + NODE_SIZE / 2;
 
-      if (req.iconUrl) {
+      const iconUrl = req.iconUrl || DEFAULT_ICON_URL;
+      if (iconUrl) {
         const img = new Image();
-        img.src = req.iconUrl;
+        img.src = iconUrl;
         if (img.complete && img.naturalWidth > 0) {
-          const iconSize = 36 * view.scale;
+          const iconSize = 36;
           ctx.drawImage(img, centerX - iconSize / 2, centerY - iconSize / 2, iconSize, iconSize);
-        } else {
-          drawDefaultIcon(ctx, centerX, centerY, view.scale);
         }
-      } else {
-        drawDefaultIcon(ctx, centerX, centerY, view.scale);
       }
 
       const nameX = pos.x + NODE_SIZE + 8;

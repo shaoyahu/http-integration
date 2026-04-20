@@ -159,6 +159,9 @@ export const normalizeWorkflowRunNodeLog = (node = {}, index = 0) => {
     upstreamRequestIds: Array.isArray(node.upstreamRequestIds)
       ? node.upstreamRequestIds.filter((requestId) => typeof requestId === 'string' && requestId.trim())
       : [],
+    downstreamRequestIds: Array.isArray(node.downstreamRequestIds)
+      ? node.downstreamRequestIds.filter((requestId) => typeof requestId === 'string' && requestId.trim())
+      : [],
     requestInfo: {
       url: typeof node.requestInfo?.url === 'string' ? node.requestInfo.url : (typeof node.url === 'string' ? node.url : ''),
       method: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].includes(node.requestInfo?.method) ? node.requestInfo.method : method,
