@@ -12,7 +12,6 @@ import {
   FileSearchOutlined,
   ApiOutlined,
   CloseOutlined,
-  BarsOutlined,
   PlusOutlined,
   DeploymentUnitOutlined,
   RetweetOutlined,
@@ -72,7 +71,7 @@ import {
   MIN_NODE_HORIZONTAL_GAP,
   DEFAULT_ICON_URL,
 } from '../components/workflow';
-import { renderCanvasFrame } from '../components/workflow/WorkflowCanvasRenderer';
+import { WorkflowRunLogViewer } from '../components/workflow/WorkflowRunLogViewer';
 
 const { Content } = Layout;
 const WORKFLOW_VIEW_TOP_INSET = 104;
@@ -212,7 +211,12 @@ const rectsOverlap = (
   ax: number, ay: number, aw: number, ah: number,
   bx: number, by: number, bw: number, bh: number,
   gap: number, horizontalGap: number
-): boolean => !(ax + aw + gap <= bx || bx + bw + gap <= ax || ay + ah + gap <= by || by + bh + gap <= ay);
+): boolean => !(
+  ax + aw + horizontalGap <= bx
+  || bx + bw + horizontalGap <= ax
+  || ay + ah + gap <= by
+  || by + bh + gap <= ay
+);
 
 const pushOutOfCollision = (
   draggedId: string,
@@ -332,31 +336,28 @@ export const WorkflowPage: React.FC = () => {
   );
 
   const saveToUndo = useCallback((snapshot: WorkflowStatePayload) => {
-    setUndoStack((prev) => [...prev.slice(-20), snapshot]); // Keep last 20 snapshots
+    setUndoStack((prev) => [...prev.slice(-20), structuredClone(snapshot)]); // Keep last 20 snapshots
     setRedoStack([]);
   }, []);
   
-  // Apply a snapshot to the store/state and update last saved refs
   const applySnapshot = useCallback((snapshot: WorkflowStatePayload) => {
     setWorkflowState(snapshot.workflows, snapshot.selectedWorkflowId, snapshot.folders);
-    lastSavedSnapshotRef.current = snapshot;
-    lastSavedSerializedRef.current = serializeWorkflowSnapshot(snapshot);
   }, [setWorkflowState]);
   // Undo / Redo handlers
   const handleUndo = useCallback(() => {
     if (undoStack.length === 0) return;
     const prev = undoStack[undoStack.length - 1];
     setUndoStack((s) => s.slice(0, -1));
-    setRedoStack((r) => [...r, currentSnapshot]);
-    applySnapshot(prev as unknown as WorkflowStatePayload);
+    setRedoStack((r) => [...r, structuredClone(currentSnapshot)]);
+    applySnapshot(structuredClone(prev));
   }, [undoStack, currentSnapshot, applySnapshot]);
 
   const handleRedo = useCallback(() => {
     if (redoStack.length === 0) return;
     const next = redoStack[redoStack.length - 1];
     setRedoStack((s) => s.slice(0, -1));
-    setUndoStack((u) => [...u, currentSnapshot]);
-    applySnapshot(next as unknown as WorkflowStatePayload);
+    setUndoStack((u) => [...u, structuredClone(currentSnapshot)]);
+    applySnapshot(structuredClone(next));
   }, [redoStack, currentSnapshot, applySnapshot]);
   const [view, setView] = useState<{ scale: number; offsetX: number; offsetY: number }>({ scale: 1, offsetX: 0, offsetY: 0 });
   const [zoomBadge, setZoomBadge] = useState<string | null>(null);
@@ -366,7 +367,7 @@ export const WorkflowPage: React.FC = () => {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [addPanelOpen, setAddPanelOpen] = useState(false);
-  const [addPanelPos, setAddPanelPos] = useState<{ x: number; y: number; afterRequestId: string | null }>({ x: 0, y: 0, afterRequestId: null });
+  const [addPanelPos] = useState<{ x: number; y: number; afterRequestId: string | null }>({ x: 0, y: 0, afterRequestId: null });
   const [spaceDown, setSpaceDown] = useState(false);
   const [workflowSiderCollapsed, setWorkflowSiderCollapsed] = useState(false);
   const [activeAssistTab, setActiveAssistTab] = useState<'requests' | 'search' | 'logs' | 'explain'>('requests');
@@ -408,9 +409,11 @@ export const WorkflowPage: React.FC = () => {
   const spaceDownRef = React.useRef(false);
   const initializedRef = React.useRef(false);
   const lastSavedSerializedRef = React.useRef('');
-  const lastSavedSnapshotRef = React.useRef<WorkflowStatePayload>({ workflows: [], selectedWorkflowId: null });
+  const lastSavedSnapshotRef = React.useRef<WorkflowStatePayload>({ workflows: [], folders: [], selectedWorkflowId: null });
   const saveTimerRef = React.useRef<number | null>(null);
   const savePromiseRef = React.useRef<Promise<void>>(Promise.resolve());
+  const scrollAnimRef = React.useRef<number | null>(null);
+  const mountedRef = React.useRef(true);
 
   const selectedWorkflow = workflows.find((wf) => wf.id === selectedWorkflowId);
   const lastUpdated = selectedWorkflow?.updatedAt || selectedWorkflow?.createdAt;
@@ -419,8 +422,8 @@ export const WorkflowPage: React.FC = () => {
     [canvasSize, WORKFLOW_VIEW_TOP_INSET]
   );
   const isDirty = initializedRef.current && currentSerializedSnapshot !== lastSavedSerializedRef.current;
-  const saveStatusText = getSaveStatusText(isLoadingState, isSavingState, isDirty, saveError);
-  const saveStatusColor = getSaveStatusColor(isLoadingState, isSavingState, isDirty, saveError);
+  const saveStatusText = getSaveStatusText(isLoadingState, isSavingState || isAutoSaving, isDirty, saveError);
+  const saveStatusColor = getSaveStatusColor(isLoadingState, isSavingState || isAutoSaving, isDirty, saveError);
   const databaseStatusText = isDatabaseConnected ? '数据库在线' : '数据库离线';
   const databaseStatusColor = isDatabaseConnected ? 'success' : 'error';
   const workflowExplanation = React.useMemo<WorkflowExplanation>(
@@ -432,7 +435,6 @@ export const WorkflowPage: React.FC = () => {
     }),
     [selectedWorkflow]
   );
-  const selectedRunLogNode = selectedRunLog?.nodes.find((node) => node.requestId === selectedRunLogNodeId) || null;
   const filteredWorkflowRequests = React.useMemo(() => {
     if (!selectedWorkflow) {
       return [];
@@ -491,6 +493,17 @@ export const WorkflowPage: React.FC = () => {
   React.useEffect(() => {
     canvasSizeRef.current = canvasSize;
   }, [canvasSize]);
+
+  React.useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (scrollAnimRef.current !== null) {
+        cancelAnimationFrame(scrollAnimRef.current);
+        scrollAnimRef.current = null;
+      }
+    };
+  }, []);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -683,7 +696,6 @@ export const WorkflowPage: React.FC = () => {
   }, [nodePositions]);
 
   React.useEffect(() => {
-    let cancelled = false;
     const handleKeyDown = (event: KeyboardEvent) => {
       // Don't trigger shortcuts while typing in inputs
       const target = event.target as HTMLElement | null;
@@ -721,15 +733,18 @@ export const WorkflowPage: React.FC = () => {
 
       // Undo - Ctrl/Cmd+Z (if supported by store)
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') {
-        const undoFn = (useWorkflowStore as any).undo;
-        if (typeof undoFn === 'function') {
-          event.preventDefault();
-          try {
-            undoFn();
-          } catch {
-            // ignore
-          }
+        event.preventDefault();
+        if (event.shiftKey) {
+          handleRedo();
+        } else {
+          handleUndo();
         }
+        return;
+      }
+
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'y') {
+        event.preventDefault();
+        handleRedo();
         return;
       }
 
@@ -758,7 +773,7 @@ export const WorkflowPage: React.FC = () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
-  }, [selectedWorkflowId, selectedNodeId, selectedEdgeId, removeRequestFromWorkflow, removeEdge, setSelectedNodeId, setSelectedEdgeId, currentSnapshot, lastSavedSnapshotRef, persistWorkflowState]);
+  }, [selectedWorkflowId, selectedNodeId, selectedEdgeId, removeRequestFromWorkflow, removeEdge, setSelectedNodeId, setSelectedEdgeId, currentSnapshot, persistWorkflowState, handleUndo, handleRedo]);
 
   React.useEffect(() => {
     setAddPanelOpen(false);
@@ -1069,8 +1084,11 @@ export const WorkflowPage: React.FC = () => {
       try {
         const savedLog = await saveWorkflowRunLog(latestWorkflow.id, logPayload);
         setRunLogs((previous) => sortRunLogsByStartedAt([savedLog, ...previous.filter((log) => log.id !== savedLog.id)]));
+        setSelectedRunLog(savedLog);
+        setSelectedRunLogNodeId(savedLog.nodes[0]?.requestId || null);
         setActiveAssistTab('logs');
         setAssistPanelOpen(true);
+        setRunLogDrawerOpen(true);
       } catch (error) {
         const errorMsg = getErrorMessage(error);
         console.error('Failed to save workflow run log:', errorMsg);
@@ -1317,6 +1335,61 @@ export const WorkflowPage: React.FC = () => {
     }));
   }, [triggerPos]);
 
+  const scrollToNode = useCallback((_nodeId: string, position: { x: number; y: number }) => {
+    const container = canvasContainerRef.current;
+    if (!container || !position) {
+      console.warn('scrollToNode: missing container or position', { container: !!container, position });
+      return;
+    }
+
+    const scale = view.scale;
+    if (scale <= 0 || !isFinite(scale)) {
+      console.warn('scrollToNode: invalid scale', scale);
+      return;
+    }
+
+    const centerX = container.clientWidth / 2;
+    const centerY = container.clientHeight / 2;
+
+    if (centerX <= 0 || centerY <= 0) {
+      console.warn('scrollToNode: container has no size', { centerX, centerY });
+      return;
+    }
+
+    const newOffsetX = position.x + NODE_SIZE / 2 - centerX / scale;
+    const newOffsetY = position.y + NODE_SIZE / 2 - centerY / scale;
+
+    const startOffsetX = view.offsetX;
+    const startOffsetY = view.offsetY;
+    const startTime = performance.now();
+    const duration = 300;
+
+    if (scrollAnimRef.current !== null) {
+      cancelAnimationFrame(scrollAnimRef.current);
+      scrollAnimRef.current = null;
+    }
+
+    const animateScroll = (currentTime: number) => {
+      if (!mountedRef.current) return;
+      const elapsed = currentTime - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      const easeOut = 1 - Math.pow(1 - progress, 3);
+
+      const currentX = startOffsetX + (newOffsetX - startOffsetX) * easeOut;
+      const currentY = startOffsetY + (newOffsetY - startOffsetY) * easeOut;
+
+      setView((prev) => ({ ...prev, offsetX: currentX, offsetY: currentY }));
+
+      if (progress < 1) {
+        scrollAnimRef.current = requestAnimationFrame(animateScroll);
+      } else {
+        scrollAnimRef.current = null;
+      }
+    };
+
+    scrollAnimRef.current = requestAnimationFrame(animateScroll);
+  }, [view.scale, view.offsetX, view.offsetY, canvasContainerRef]);
+
   const addRequestToCanvas = useCallback((
     request: WorkflowAvailableRequest,
     placement?: { x: number; y: number; afterRequestId?: string | null }
@@ -1375,8 +1448,6 @@ export const WorkflowPage: React.FC = () => {
       [newId]: nextPosition,
     };
 
-    // Save before mutating node positions and workflow state
-    saveToUndo(buildWorkflowSnapshot(useWorkflowStore.getState()));
     setNodePositions(mergedPositions);
     updateWorkflow(selectedWorkflow.id, {
       requests: currentRequests,
@@ -1522,13 +1593,6 @@ export const WorkflowPage: React.FC = () => {
     shouldResetViewOnWorkflowChangeRef.current = false;
   }, [handleResetView, nodePositions, selectedWorkflow]);
 
-  const openRunLogDetail = useCallback((log: WorkflowRunLog) => {
-    setSelectedRunLog(log);
-    setSelectedRunLogNodeId(getDefaultRunLogNodeId(log));
-    setAssistPanelOpen(false);
-    setRunLogDrawerOpen(true);
-  }, []);
-
   const handleCanvasMouseDown = (event: React.MouseEvent<HTMLCanvasElement>) => {
     if (!selectedWorkflow) return;
     const { x, y } = getCanvasPoint(event);
@@ -1595,6 +1659,7 @@ export const WorkflowPage: React.FC = () => {
     const pos = nodePositions[node.id];
     if (!pos) return;
     setSelectedEdgeId(null);
+    saveToUndo(buildWorkflowSnapshot(useWorkflowStore.getState()));
     dragRef.current.id = node.id;
     dragRef.current.startX = x;
     dragRef.current.startY = y;
@@ -1666,8 +1731,6 @@ export const WorkflowPage: React.FC = () => {
       if (Math.abs(x - dragRef.current.startX) > 4 || Math.abs(y - dragRef.current.startY) > 4) {
         dragRef.current.moved = true;
       }
-      // Save current state for undo before mutating node position
-      saveToUndo(buildWorkflowSnapshot(useWorkflowStore.getState()));
       setNodePositions((prev) => ({
         ...prev,
         [id]: { x: Math.max(0, newX), y: Math.max(0, newY) },
@@ -1780,22 +1843,6 @@ export const WorkflowPage: React.FC = () => {
       y: screenY,
     };
   }, [selectedWorkflow, selectedEdgeId, nodePositions, triggerPos, view, canvasSize]);
-
-  const handleImportOutputFields = (result: WorkflowRunNodeLog) => {
-    if (result.responseData && selectedWorkflowId) {
-      const workflow = workflows.find((wf) => wf.id === selectedWorkflowId);
-      if (workflow) {
-        const request = workflow.requests.find((req) => req.id === result.requestId);
-        if (request) {
-          useWorkflowStore.getState().addOutputFieldsFromResponse(selectedWorkflowId, request.id, result.responseData);
-          const responseObject = typeof result.responseData === 'object' && result.responseData !== null
-            ? Object.keys(result.responseData as Record<string, unknown>).length
-            : 0;
-          message.success(`已为 ${request.name} 导入 ${responseObject} 个出参字段`);
-        }
-      }
-    }
-  };
 
   // Canvas rendering
   React.useEffect(() => {
@@ -2300,7 +2347,6 @@ export const WorkflowPage: React.FC = () => {
                                 if (item.key === 'zoom-reset') {
                                   const container = canvasContainerRef.current;
                                   const vpW = container ? container.clientWidth : canvasSize.width;
-                                  const vpH = container ? container.clientHeight : canvasSize.height;
                                   setView({
                                     scale: 1,
                                     offsetX: triggerPos.x + TRIGGER_WIDTH / 2 - vpW / 2,
@@ -2427,89 +2473,34 @@ export const WorkflowPage: React.FC = () => {
                         {activeAssistTab === 'logs' ? (
                           selectedRunLog ? (
                             <div className="flex-1 flex flex-col overflow-hidden">
-                              <div className="px-3 py-2 border-b border-gray-100 flex items-center gap-2 flex-shrink-0">
-                                <Button type="text" size="small" icon={<LeftOutlined />} onClick={() => setSelectedRunLog(null)} />
-                                <span className="text-xs text-gray-500">返回列表</span>
+                              <div className="px-3 py-2 border-b border-gray-100 flex items-center justify-between gap-3 flex-shrink-0">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <Button
+                                    type="text"
+                                    size="small"
+                                    icon={<LeftOutlined />}
+                                    onClick={() => setSelectedRunLog(null)}
+                                  />
+                                  <span className="text-xs text-gray-500">返回列表</span>
+                                </div>
+                                <div className="min-w-0 text-right">
+                                  <div className="text-xs font-medium text-gray-700 truncate">
+                                    {selectedRunLog.workflowName}
+                                  </div>
+                                  <div className="text-[11px] text-gray-400">
+                                    {selectedRunLog.nodes.length} 节点 · {getDurationText(selectedRunLog.durationMs)}
+                                  </div>
+                                </div>
                               </div>
-                              <div className="flex-1 flex overflow-hidden">
-                                <div className="w-[100px] flex-shrink-0 border-r border-gray-100 overflow-auto py-1.5 px-1.5 space-y-1">
-                                  {selectedRunLog.nodes.map((node, index) => (
-                                    <div
-                                      key={node.requestId}
-                                      onClick={() => setSelectedRunLogNodeId(node.requestId)}
-                                      className={`rounded-md p-1.5 cursor-pointer transition-all text-[10px] ${
-                                        selectedRunLogNodeId === node.requestId
-                                          ? 'bg-blue-50 border border-blue-300'
-                                          : 'bg-gray-50 border border-transparent hover:bg-gray-100'
-                                      }`}
-                                    >
-                                      <div className="font-medium text-gray-700 truncate">{index + 1}. {node.requestName}</div>
-                                      <div className={node.status === 'success' ? 'text-green-600' : 'text-red-500'}>{node.statusCode ?? '--'}</div>
-                                    </div>
-                                  ))}
-                                </div>
-                                <div className="flex-1 min-w-0 overflow-auto p-2.5 space-y-2.5">
-                                  {selectedRunLogNode ? (
-                                    <>
-                                      <div className="flex items-center gap-2 text-[10px]">
-                                        <Tag color="blue" className="m-0">{selectedRunLogNode.method}</Tag>
-                                        <Tag color={selectedRunLogNode.status === 'success' ? 'success' : 'error'} className="m-0">{selectedRunLogNode.statusCode ?? '--'}</Tag>
-                                        <span className="text-gray-500">{getDurationText(selectedRunLogNode.durationMs)}</span>
-                                      </div>
-                                      <div className="bg-gray-50 rounded-md p-1.5">
-                                        <div className="text-[10px] text-gray-500 mb-0.5">URL</div>
-                                        <div className="text-[10px] text-gray-700 font-mono break-all leading-relaxed">{selectedRunLogNode.url || '--'}</div>
-                                      </div>
-                                      {Object.keys(selectedRunLogNode.requestInfo?.params || {}).length > 0 && (
-                                        <div>
-                                          <div className="text-[10px] font-semibold text-gray-600 mb-1">查询参数</div>
-                                          <div className="border border-gray-200 rounded overflow-hidden">
-                                            <Editor
-                                              height="60px"
-                                              defaultLanguage="json"
-                                              value={formatResponseData(selectedRunLogNode.requestInfo?.params || {})}
-                                              theme="vs"
-                                              options={{ minimap: { enabled: false }, fontSize: 10, scrollBeyondLastLine: false, wordWrap: 'on', readOnly: true, lineNumbers: 'off', folding: false }}
-                                            />
-                                          </div>
-                                        </div>
-                                      )}
-                                      {Object.keys(selectedRunLogNode.requestInfo?.headers || {}).length > 0 && (
-                                        <div>
-                                          <div className="text-[10px] font-semibold text-gray-600 mb-1">请求头</div>
-                                          <div className="border border-gray-200 rounded overflow-hidden">
-                                            <Editor
-                                              height="60px"
-                                              defaultLanguage="json"
-                                              value={formatResponseData(selectedRunLogNode.requestInfo?.headers || {})}
-                                              theme="vs"
-                                              options={{ minimap: { enabled: false }, fontSize: 10, scrollBeyondLastLine: false, wordWrap: 'on', readOnly: true, lineNumbers: 'off', folding: false }}
-                                            />
-                                          </div>
-                                        </div>
-                                      )}
-                                      <div>
-                                        <div className="text-[10px] font-semibold text-gray-600 mb-1">响应</div>
-                                        <div className="border border-gray-200 rounded overflow-hidden">
-                                          <Editor
-                                            height="120px"
-                                            defaultLanguage="json"
-                                            value={formatResponseData(selectedRunLogNode.responseData)}
-                                            theme="vs"
-                                            options={{ minimap: { enabled: false }, fontSize: 10, scrollBeyondLastLine: false, wordWrap: 'on', readOnly: true, lineNumbers: 'off', folding: false }}
-                                          />
-                                        </div>
-                                      </div>
-                                      {selectedRunLogNode.error && (
-                                        <div className="bg-red-50 border border-red-200 rounded p-1.5 text-[10px] text-red-600">
-                                          {selectedRunLogNode.error}
-                                        </div>
-                                      )}
-                                    </>
-                                  ) : (
-                                    <div className="flex items-center justify-center h-full text-gray-400 text-xs">选择节点查看</div>
-                                  )}
-                                </div>
+                              <div className="flex-1 min-h-0">
+                                <WorkflowRunLogViewer
+                                  log={selectedRunLog}
+                                  selectedNodeId={selectedRunLogNodeId}
+                                  onSelectNode={setSelectedRunLogNodeId}
+                                  onNodeClickWithPosition={scrollToNode}
+                                  nodePositions={nodePositions}
+                                  compact
+                                />
                               </div>
                             </div>
                           ) : (
@@ -2881,150 +2872,14 @@ export const WorkflowPage: React.FC = () => {
             </div>
 
             <div className="flex-1 flex overflow-hidden">
-              <div className="w-[120px] flex-shrink-0 border-r border-gray-100 overflow-auto py-2 px-2 space-y-1">
-                {selectedRunLog.nodes.map((node, index) => (
-                  <div
-                    key={node.requestId}
-                    onClick={() => setSelectedRunLogNodeId(node.requestId)}
-                    className={`rounded-lg p-2 cursor-pointer transition-all ${
-                      selectedRunLogNodeId === node.requestId
-                        ? 'bg-blue-50 border border-blue-300 shadow-sm'
-                        : 'bg-gray-50 border border-transparent hover:bg-gray-100'
-                    }`}
-                  >
-                    <div className="text-[11px] font-medium text-gray-800 truncate">
-                      {index + 1}. {node.requestName}
-                    </div>
-                    {node.downstreamRequestIds && node.downstreamRequestIds.length > 1 && (
-                      <div className="text-[10px] text-blue-600 font-medium">
-                        分支 ×{node.downstreamRequestIds.length}
-                      </div>
-                    )}
-                    <div className={`text-[10px] mt-0.5 ${
-                      node.status === 'success' ? 'text-green-600' : 'text-red-500'
-                    }`}>
-                      {node.statusCode ?? '--'}
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <div className="flex-1 min-w-0 overflow-auto">
-                {selectedRunLogNode ? (
-                  <div className="p-3 space-y-3">
-                    <div className="grid grid-cols-4 gap-2">
-                      <div className="bg-gray-50 rounded-lg p-2 text-center">
-                        <div className="text-[10px] text-gray-500 mb-0.5">方法</div>
-                        <Tag className="text-[10px] m-0" color="blue">{selectedRunLogNode.method}</Tag>
-                      </div>
-                      <div className="bg-gray-50 rounded-lg p-2 text-center">
-                        <div className="text-[10px] text-gray-500 mb-0.5">状态</div>
-                        <Tag className="text-[10px] m-0" color={selectedRunLogNode.status === 'success' ? 'success' : 'error'}>
-                          {selectedRunLogNode.statusCode ?? '--'}
-                        </Tag>
-                      </div>
-                      <div className="bg-gray-50 rounded-lg p-2 text-center col-span-2">
-                        <div className="text-[10px] text-gray-500 mb-0.5">耗时</div>
-                        <div className="text-[11px] font-medium text-gray-700">{getDurationText(selectedRunLogNode.durationMs)}</div>
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="text-[11px] font-semibold text-gray-700 mb-1.5 flex items-center gap-2">
-                        <span className="w-1 h-3 bg-blue-500 rounded-full" />
-                        请求路径
-                      </div>
-                      <div className="bg-gray-50 rounded-lg p-2 border border-gray-100">
-                        <div className="text-[11px] text-gray-700 font-mono break-all leading-relaxed">
-                          {selectedRunLogNode.url || '--'}
-                        </div>
-                      </div>
-                    </div>
-
-                    {Object.keys(selectedRunLogNode.requestInfo?.params || {}).length > 0 && (
-                      <div>
-                        <div className="text-[11px] font-semibold text-gray-700 mb-1.5 flex items-center gap-2">
-                          <span className="w-1 h-3 bg-emerald-500 rounded-full" />
-                          查询参数
-                        </div>
-                        <div className="border border-gray-200 rounded-lg overflow-hidden">
-                          <Editor
-                            height="80px"
-                            defaultLanguage="json"
-                            value={formatResponseData(selectedRunLogNode.requestInfo?.params || {})}
-                            theme="vs"
-                            options={{ minimap: { enabled: false }, fontSize: 11, scrollBeyondLastLine: false, wordWrap: 'on', readOnly: true, lineNumbers: 'off', folding: false }}
-                          />
-                        </div>
-                      </div>
-                    )}
-
-                    {Object.keys(selectedRunLogNode.requestInfo?.headers || {}).length > 0 && (
-                      <div>
-                        <div className="text-[11px] font-semibold text-gray-700 mb-1.5 flex items-center gap-2">
-                          <span className="w-1 h-3 bg-amber-500 rounded-full" />
-                          请求头
-                        </div>
-                        <div className="border border-gray-200 rounded-lg overflow-hidden">
-                          <Editor
-                            height="80px"
-                            defaultLanguage="json"
-                            value={formatResponseData(selectedRunLogNode.requestInfo?.headers || {})}
-                            theme="vs"
-                            options={{ minimap: { enabled: false }, fontSize: 11, scrollBeyondLastLine: false, wordWrap: 'on', readOnly: true, lineNumbers: 'off', folding: false }}
-                          />
-                        </div>
-                      </div>
-                    )}
-
-                    {selectedRunLogNode.requestInfo?.body && (
-                      <div>
-                        <div className="text-[11px] font-semibold text-gray-700 mb-1.5 flex items-center gap-2">
-                          <span className="w-1 h-3 bg-purple-500 rounded-full" />
-                          请求体
-                        </div>
-                        <div className="border border-gray-200 rounded-lg overflow-hidden">
-                          <Editor
-                            height="100px"
-                            defaultLanguage="json"
-                            value={typeof selectedRunLogNode.requestInfo.body === 'string' 
-                              ? selectedRunLogNode.requestInfo.body 
-                              : formatResponseData(selectedRunLogNode.requestInfo.body)}
-                            theme="vs"
-                            options={{ minimap: { enabled: false }, fontSize: 11, scrollBeyondLastLine: false, wordWrap: 'on', readOnly: true, lineNumbers: 'off', folding: false }}
-                          />
-                        </div>
-                      </div>
-                    )}
-
-                    <div>
-                      <div className="text-[11px] font-semibold text-gray-700 mb-1.5 flex items-center gap-2">
-                        <span className="w-1 h-3 bg-green-500 rounded-full" />
-                        响应内容
-                      </div>
-                      <div className="border border-gray-200 rounded-lg overflow-hidden">
-                        <Editor
-                          height="160px"
-                          defaultLanguage="json"
-                          value={formatResponseData(selectedRunLogNode.responseData)}
-                          theme="vs"
-                          options={{ minimap: { enabled: false }, fontSize: 11, scrollBeyondLastLine: false, wordWrap: 'on', readOnly: true, lineNumbers: 'off', folding: false }}
-                        />
-                      </div>
-                    </div>
-
-                    {selectedRunLogNode.error && (
-                      <div className="bg-red-50 border border-red-200 rounded-lg p-2.5">
-                        <div className="text-[11px] font-semibold text-red-600 mb-1">错误信息</div>
-                        <div className="text-[11px] text-red-500 whitespace-pre-wrap">{selectedRunLogNode.error}</div>
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="flex items-center justify-center h-full text-gray-400 text-sm">
-                    选择节点查看详情
-                  </div>
-                )}
+              <div className="flex-1 min-w-0 overflow-hidden">
+                <WorkflowRunLogViewer
+                  log={selectedRunLog}
+                  selectedNodeId={selectedRunLogNodeId}
+                  onSelectNode={setSelectedRunLogNodeId}
+                  onNodeClickWithPosition={scrollToNode}
+                  nodePositions={nodePositions}
+                />
               </div>
 
               <div 

@@ -5,7 +5,7 @@ import type { WorkflowAvailableRequest } from '../../api/http';
 
 interface WorkflowAddPanelProps {
   addPanelOpen: boolean;
-  addPanelRef: React.RefObject<HTMLDivElement | null>;
+  addPanelRef: React.MutableRefObject<HTMLDivElement | null>;
   addPanelPos: { x: number; y: number };
   view: { scale: number; offsetX: number; offsetY: number };
   onRequestSelect: (requestKey: string) => void;
@@ -36,9 +36,13 @@ export const WorkflowAddPanel: React.FC<WorkflowAddPanelProps> = ({
     };
   };
 
+  const setAddPanelNode = (node: HTMLDivElement | null) => {
+    addPanelRef.current = node;
+  };
+
   return (
     <div
-      ref={addPanelRef}
+      ref={setAddPanelNode}
       className="absolute bg-white border border-gray-200 rounded-lg shadow-lg w-[280px] p-3 z-20"
       style={getAddPanelStyle()}
     >

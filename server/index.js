@@ -6,6 +6,7 @@ import crypto from 'crypto';
 import { ObjectId } from 'mongodb';
 import 'dotenv/config';
 import { connectMongo, getDb, getMongoState, disconnectMongo } from './mongo.js';
+import { buildProxyRequestOptions } from './proxyTransport.js';
 import {
   getSafeSelectedWorkflowId,
   maskSensitiveHeaders,
@@ -14,6 +15,11 @@ import {
   normalizeWorkflowState,
 } from './workflowState.js';
 import { findBlockedResolvedAddress, isBlockedHostname } from './proxySecurity.js';
+import {
+  getUserStateDocFilter,
+  getUserStateDocId,
+  shouldExposeSharedRequestState,
+} from './userStateStorage.js';
 
 const app = express();
 const PORT = process.env.PORT || 4573;
@@ -448,7 +454,7 @@ const normalizeRequestState = (payload = {}) => {
   };
 };
 
-const getUserStateDocId = (req) => String(req.auth.user.id);
+const getAuthUserStateDocId = (req) => getUserStateDocId(req.auth.user.id);
 
 const getDbOrReconnect = async () => {
   const current = getDb();
@@ -459,7 +465,7 @@ const getDbOrReconnect = async () => {
 };
 
 const loadRequestStateForUser = async (db, userDocId) => {
-  const existing = await db.collection(REQUEST_STATE_COLLECTION).findOne({ _id: userDocId });
+  const existing = await db.collection(REQUEST_STATE_COLLECTION).findOne(getUserStateDocFilter(userDocId));
   return {
     existing,
     state: normalizeRequestState(existing || {}),
@@ -474,7 +480,7 @@ const persistRequestStateForUser = async (db, userDocId, requests, folders, sele
   });
 
   await db.collection(REQUEST_STATE_COLLECTION).updateOne(
-    { _id: userDocId },
+    getUserStateDocFilter(userDocId),
     {
       $set: {
         ...normalized,
@@ -491,7 +497,7 @@ const persistRequestStateForUser = async (db, userDocId, requests, folders, sele
 };
 
 const loadWorkflowStateForUser = async (db, userDocId) => {
-  const existing = await db.collection(WORKFLOW_STATE_COLLECTION).findOne({ _id: userDocId });
+  const existing = await db.collection(WORKFLOW_STATE_COLLECTION).findOne(getUserStateDocFilter(userDocId));
   return {
     existing,
     state: normalizeWorkflowState(existing || {}),
@@ -501,7 +507,7 @@ const loadWorkflowStateForUser = async (db, userDocId) => {
 const persistWorkflowStateForUser = async (db, userDocId, workflows, selectedWorkflowId, folders = []) => {
   const safeSelectedWorkflowId = getSafeSelectedWorkflowId(workflows, selectedWorkflowId);
   await db.collection(WORKFLOW_STATE_COLLECTION).updateOne(
-    { _id: userDocId },
+    getUserStateDocFilter(userDocId),
     {
       $set: {
         workflows,
@@ -916,7 +922,7 @@ app.get('/api/requests-state', requireAuth, requireAnyPermission(USER_PERMISSION
     return res.status(503).json(mongoUnavailableResponse());
   }
   try {
-    const userDocId = getUserStateDocId(req);
+    const userDocId = getAuthUserStateDocId(req);
     const { existing } = await loadRequestStateForUser(db, userDocId);
     if (!existing) {
       return res.json({ requests: [], folders: [], selectedRequestId: null });
@@ -937,7 +943,7 @@ app.patch('/api/requests-state/selection', requireAuth, requireAnyPermission(USE
     return res.status(503).json(mongoUnavailableResponse());
   }
   try {
-    const userDocId = getUserStateDocId(req);
+    const userDocId = getAuthUserStateDocId(req);
     const { state } = await loadRequestStateForUser(db, userDocId);
     const selectedRequestId = typeof req.body?.selectedRequestId === 'string' ? req.body.selectedRequestId : null;
     const nextState = await persistRequestStateForUser(
@@ -972,7 +978,7 @@ app.put('/api/requests-state/:requestId', requireAuth, requireAnyPermission(USER
       return res.status(400).json({ error: 'request is required', code: 'REQUEST_REQUIRED' });
     }
 
-    const userDocId = getUserStateDocId(req);
+    const userDocId = getAuthUserStateDocId(req);
     const { state } = await loadRequestStateForUser(db, userDocId);
     const existingRequest = state.requests.find((request) => request.id === requestId);
     const normalizedRequest = normalizeRequest(
@@ -1024,7 +1030,7 @@ app.delete('/api/requests-state/:requestId', requireAuth, requireAnyPermission(U
       return res.status(400).json({ error: 'requestId is required', code: 'REQUEST_ID_REQUIRED' });
     }
 
-    const userDocId = getUserStateDocId(req);
+    const userDocId = getAuthUserStateDocId(req);
     const { state } = await loadRequestStateForUser(db, userDocId);
     const nextRequests = state.requests.filter((request) => request.id !== requestId);
     const selectedRequestId = typeof req.body?.selectedRequestId === 'string'
@@ -1053,7 +1059,7 @@ app.put('/api/requests-state', requireAuth, requireAnyPermission(USER_PERMISSION
   }
   try {
     const normalized = normalizeRequestState(req.body || {});
-    const userDocId = getUserStateDocId(req);
+    const userDocId = getAuthUserStateDocId(req);
     await persistRequestStateForUser(
       db,
       userDocId,
@@ -1076,8 +1082,8 @@ app.get('/api/requests', requireAuth, requireAnyPermission(USER_PERMISSION.REQUE
     return res.status(503).json(mongoUnavailableResponse());
   }
   try {
-    const userDocId = getUserStateDocId(req);
-    const existing = await db.collection(REQUEST_STATE_COLLECTION).findOne({ _id: userDocId });
+    const userDocId = getAuthUserStateDocId(req);
+    const existing = await db.collection(REQUEST_STATE_COLLECTION).findOne(getUserStateDocFilter(userDocId));
     const { requests } = normalizeRequestState(existing || {});
     res.json({ requests });
   } catch (error) {
@@ -1094,7 +1100,7 @@ app.get('/api/workflow-requests', requireAuth, requireAnyPermission(USER_PERMISS
     return res.status(503).json(mongoUnavailableResponse());
   }
   try {
-    const userDocId = getUserStateDocId(req);
+    const userDocId = getAuthUserStateDocId(req);
     const [currentUserState, allUsers] = await Promise.all([
       db.collection(REQUEST_STATE_COLLECTION).findOne({ _id: userDocId }),
       db.collection(USERS_COLLECTION)
@@ -1113,7 +1119,7 @@ app.get('/api/workflow-requests', requireAuth, requireAnyPermission(USER_PERMISS
     }));
 
     const publicRequests = allRequestStates
-      .filter((doc) => String(doc._id) !== userDocId)
+      .filter((doc) => shouldExposeSharedRequestState(doc._id, userDocId, usernameMap))
       .flatMap((doc) => {
         const ownerUserId = String(doc._id);
         const ownerUsername = usernameMap.get(ownerUserId) || '未知用户';
@@ -1141,8 +1147,8 @@ app.get('/api/workflows-state', requireAuth, requireAnyPermission(USER_PERMISSIO
     return res.status(503).json(mongoUnavailableResponse());
   }
   try {
-    const userDocId = getUserStateDocId(req);
-    const existing = await db.collection(WORKFLOW_STATE_COLLECTION).findOne({ _id: userDocId });
+    const userDocId = getAuthUserStateDocId(req);
+    const existing = await db.collection(WORKFLOW_STATE_COLLECTION).findOne(getUserStateDocFilter(userDocId));
     if (!existing) {
       return res.json({ workflows: [], folders: [], selectedWorkflowId: null });
     }
@@ -1162,7 +1168,7 @@ app.patch('/api/workflows-state/selection', requireAuth, requireAnyPermission(US
     return res.status(503).json(mongoUnavailableResponse());
   }
   try {
-    const userDocId = getUserStateDocId(req);
+    const userDocId = getAuthUserStateDocId(req);
     const { state } = await loadWorkflowStateForUser(db, userDocId);
     const selectedWorkflowId = typeof req.body?.selectedWorkflowId === 'string' ? req.body.selectedWorkflowId : null;
     const nextState = await persistWorkflowStateForUser(db, userDocId, state.workflows, selectedWorkflowId, state.folders);
@@ -1191,7 +1197,7 @@ app.put('/api/workflows-state/:workflowId', requireAuth, requireAnyPermission(US
       return res.status(400).json({ error: 'workflow is required', code: 'WORKFLOW_REQUIRED' });
     }
 
-    const userDocId = getUserStateDocId(req);
+    const userDocId = getAuthUserStateDocId(req);
     const { state } = await loadWorkflowStateForUser(db, userDocId);
     const existingWorkflow = state.workflows.find((workflow) => workflow.id === workflowId);
     const normalizedWorkflow = normalizeWorkflow(
@@ -1231,7 +1237,7 @@ app.delete('/api/workflows-state/:workflowId', requireAuth, requireAnyPermission
       return res.status(400).json({ error: 'workflowId is required', code: 'WORKFLOW_ID_REQUIRED' });
     }
 
-    const userDocId = getUserStateDocId(req);
+    const userDocId = getAuthUserStateDocId(req);
     const { state } = await loadWorkflowStateForUser(db, userDocId);
     const nextWorkflows = state.workflows.filter((workflow) => workflow.id !== workflowId);
     const selectedWorkflowId = typeof req.body?.selectedWorkflowId === 'string'
@@ -1254,7 +1260,7 @@ app.put('/api/workflows-state', requireAuth, requireAnyPermission(USER_PERMISSIO
   }
   try {
     const normalized = normalizeWorkflowState(req.body || {});
-    const userDocId = getUserStateDocId(req);
+    const userDocId = getAuthUserStateDocId(req);
     await persistWorkflowStateForUser(db, userDocId, normalized.workflows, normalized.selectedWorkflowId, normalized.folders);
     return res.json({ ok: true, count: normalized.workflows.length });
   } catch (error) {
@@ -1276,7 +1282,7 @@ app.get('/api/workflows-state/:workflowId/logs', requireAuth, requireAnyPermissi
       return res.status(400).json({ error: 'workflowId is required', code: 'WORKFLOW_ID_REQUIRED' });
     }
 
-    const userDocId = getUserStateDocId(req);
+    const userDocId = getAuthUserStateDocId(req);
     const docs = await db.collection(WORKFLOW_RUN_LOG_COLLECTION)
       .find({ userId: userDocId, workflowId })
       .sort({ startedAt: -1, _id: -1 })
@@ -1305,7 +1311,7 @@ app.post('/api/workflows-state/:workflowId/logs', requireAuth, requireAnyPermiss
       return res.status(400).json({ error: 'workflowId is required', code: 'WORKFLOW_ID_REQUIRED' });
     }
 
-    const userDocId = getUserStateDocId(req);
+    const userDocId = getAuthUserStateDocId(req);
     const normalizedLog = normalizeWorkflowRunLog(
       {
         ...req.body,
@@ -1984,8 +1990,8 @@ const deleteAdminUserHandler = async (req, res) => {
 
     await db.collection(USERS_COLLECTION).deleteOne({ _id: userObjectId });
     await db.collection(USER_SESSIONS_COLLECTION).deleteMany({ userId: userObjectId });
-    await db.collection(REQUEST_STATE_COLLECTION).deleteOne({ userId: rawUserId });
-    await db.collection(WORKFLOW_STATE_COLLECTION).deleteOne({ userId: rawUserId });
+    await db.collection(REQUEST_STATE_COLLECTION).deleteOne(getUserStateDocFilter(rawUserId));
+    await db.collection(WORKFLOW_STATE_COLLECTION).deleteOne(getUserStateDocFilter(rawUserId));
     await db.collection(WORKFLOW_RUN_LOG_COLLECTION).deleteMany({ userId: rawUserId });
 
     await db.collection(AUDIT_LOGS_COLLECTION).insertOne({
@@ -2110,18 +2116,7 @@ app.all('/api/proxy', requireAuth, requireAnyPermission(USER_PERMISSION.REQUEST_
     const PROXY_TIMEOUT_MS = 30000;
     const MAX_RESPONSE_SIZE = 50 * 1024 * 1024; // 50MB
 
-    const options = {
-      method,
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': 'HTTP-Request-Builder-v1.0',
-        ...headers
-      }
-    };
-
-    if (body && method !== 'GET' && method !== 'HEAD') {
-      options.headers['Content-Type'] = 'application/json';
-    }
+    const options = buildProxyRequestOptions({ method, headers, body });
 
     const proxyReq = lib.request(targetUrl, options, (proxyRes) => {
       const chunks = [];
@@ -2166,8 +2161,8 @@ app.all('/api/proxy', requireAuth, requireAnyPermission(USER_PERMISSION.REQUEST_
       res.status(504).json({ error: 'Proxy request timeout', details: `Request exceeded ${PROXY_TIMEOUT_MS / 1000} seconds` });
     });
 
-    if (body) {
-      proxyReq.write(JSON.stringify(body));
+    if (options.body !== null) {
+      proxyReq.write(options.body);
     }
     proxyReq.end();
   } catch (error) {

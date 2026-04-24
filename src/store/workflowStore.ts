@@ -43,6 +43,21 @@ export interface WorkflowRequest {
   iconUrl?: string
 }
 
+const createWorkflowRequest = (request: Partial<WorkflowRequest>): WorkflowRequest => ({
+  id: request.id || Date.now().toString(),
+  name: request.name || '未命名请求',
+  method: request.method || 'GET',
+  url: request.url || '',
+  headers: Array.isArray(request.headers) ? request.headers : [],
+  params: Array.isArray(request.params) ? request.params : [],
+  body: typeof request.body === 'string' ? request.body : '',
+  inputFields: Array.isArray(request.inputFields) ? request.inputFields : [],
+  outputFields: Array.isArray(request.outputFields) ? request.outputFields : [],
+  inputValues: request.inputValues && typeof request.inputValues === 'object' ? request.inputValues : {},
+  apiMappings: Array.isArray(request.apiMappings) ? request.apiMappings : [],
+  iconUrl: request.iconUrl,
+})
+
 interface WorkflowStore {
   workflows: Workflow[]
   folders: WorkflowFolder[]
@@ -129,14 +144,7 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
               updatedAt: Date.now(),
               requests: [
                 ...wf.requests,
-                {
-                  ...request,
-                  id: request.id || Date.now().toString(),
-                  inputValues: {},
-                  inputFields: request.inputFields || [],
-                  outputFields: request.outputFields || [],
-                  apiMappings: request.apiMappings || [],
-                },
+                createWorkflowRequest(request),
               ],
             }
           : wf
@@ -173,6 +181,8 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
     set((state) => {
       const workflow = state.workflows.find((wf) => wf.id === workflowId);
       if (!workflow) return state;
+      const request = workflow.requests.find((item) => item.id === requestId);
+      if (!request) return state;
 
       // Extract possible output fields from response
       const outputFields: OutputField[] = [];
@@ -206,7 +216,7 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
 
       traverse(response);
 
-      const existingOutputFieldPaths = new Set(req.outputFields.map((f) => f.path));
+      const existingOutputFieldPaths = new Set(request.outputFields.map((field) => field.path));
       const newFields = outputFields.filter((f) => !existingOutputFieldPaths.has(f.path));
       if (newFields.length === 0) return state;
       const newRequests = workflow.requests.map((r) =>

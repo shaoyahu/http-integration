@@ -11,11 +11,17 @@ export const api = axios.create({
   withCredentials: true,
 });
 
+export interface HealthCheckResponse {
+  status: string;
+  message: string;
+  mongo?: unknown;
+}
+
 let healthCheckCache:
   | {
       timestamp: number;
-      data: unknown;
-      promise: Promise<unknown>;
+      data: HealthCheckResponse | null;
+      promise: Promise<HealthCheckResponse>;
     }
   | null = null;
 
@@ -32,7 +38,7 @@ export const proxyRequest = async (proxyReq: ProxyRequest) => {
   return response.data;
 };
 
-export const healthCheck = async () => {
+export const healthCheck = async (): Promise<HealthCheckResponse> => {
   const now = Date.now();
   if (healthCheckCache?.data && now - healthCheckCache.timestamp < 10000) {
     return healthCheckCache.data;
@@ -40,14 +46,14 @@ export const healthCheck = async () => {
   if (healthCheckCache?.promise) {
     return healthCheckCache.promise;
   }
-  let promise: Promise<unknown>;
+  let promise: Promise<HealthCheckResponse>;
   promise = api.get('/health').then((response) => {
     healthCheckCache = {
       timestamp: Date.now(),
-      data: response.data,
+      data: response.data as HealthCheckResponse,
       promise,
     };
-    return response.data;
+    return response.data as HealthCheckResponse;
   }).catch((error) => {
     healthCheckCache = null;
     throw error;

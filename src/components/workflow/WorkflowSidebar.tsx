@@ -361,12 +361,6 @@ export const WorkflowSidebar = React.memo(function WorkflowSidebar({
     setEditingId(null);
   };
 
-  const startEditing = (event: React.MouseEvent, workflow: Workflow) => {
-    event.stopPropagation();
-    setEditingId(workflow.id);
-    setEditingName(workflow.name);
-  };
-
   const startFolderEditing = (e: React.MouseEvent, folderId: string, folderName: string) => {
     e.stopPropagation();
     setEditingFolderId(folderId);

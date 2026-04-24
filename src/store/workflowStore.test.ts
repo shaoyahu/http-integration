@@ -191,6 +191,49 @@ describe('WorkflowStore', () => {
       expect(workflow?.requests[0].id).toBe('request-2');
       expect(workflow?.requests[1].id).toBe('request-1');
     });
+
+    it('should add output fields from nested response data without duplicates', () => {
+      const request: Partial<WorkflowRequest> = {
+        id: 'request-with-output',
+        name: 'Request With Output',
+        method: 'GET',
+        url: 'https://example.com',
+        headers: [],
+        params: [],
+        body: '',
+        inputFields: [],
+        outputFields: [{ name: 'existing', path: 'data.id' }],
+        inputValues: {},
+      };
+
+      store.getState().addRequestToWorkflow(workflowId, request);
+      store.getState().addOutputFieldsFromResponse(workflowId, 'request-with-output', {
+        data: {
+          id: 1,
+          user: {
+            name: 'alice',
+          },
+        },
+      });
+      store.getState().addOutputFieldsFromResponse(workflowId, 'request-with-output', {
+        data: {
+          id: 1,
+          user: {
+            name: 'alice',
+          },
+        },
+      });
+
+      const workflow = store.getState().workflows.find(w => w.id === workflowId);
+      const requestAfterImport = workflow?.requests.find((item) => item.id === 'request-with-output');
+
+      expect(requestAfterImport?.outputFields).toEqual([
+        { name: 'existing', path: 'data.id' },
+        { name: 'data', path: 'data', description: '从响应中提取的参数: data' },
+        { name: 'user', path: 'data.user', description: '从响应中提取的参数: data.user' },
+        { name: 'name', path: 'data.user.name', description: '从响应中提取的参数: data.user.name' },
+      ]);
+    });
   });
 
   describe('Duplicate Request', () => {

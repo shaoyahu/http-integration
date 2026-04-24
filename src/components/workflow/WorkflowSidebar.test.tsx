@@ -1,8 +1,6 @@
-import React from 'react'
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { WorkflowSidebar } from './WorkflowSidebar'
-import { USER_ROLES } from '../../constants/auth'
 
 describe('WorkflowSidebar', () => {
   const onSelectWorkflow = vi.fn()

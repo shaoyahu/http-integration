@@ -1,5 +1,5 @@
 import React from 'react'
-import type { Workflow } from '../store/workflowStore'
+import type { Workflow } from '../../store/workflowStore'
 
 type Point = { x: number; y: number }
 type Edge = { id: string; sourceId: string; targetId: string }
@@ -12,10 +12,6 @@ type Props = {
   onEdgeClick?: (edgeId: string) => void
 }
 
-// Placeholder component for edge drawing. The actual rendering can be wired when
-// integrating the canvas renderer.
-export const WorkflowConnections: React.FC<Props> = React.memo(({ workflow }) => {
-  return null
-})
+export const WorkflowConnections: React.FC<Props> = React.memo(() => null)
 
 export default WorkflowConnections

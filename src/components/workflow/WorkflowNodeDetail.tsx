@@ -31,7 +31,7 @@ interface WorkflowNodeDetailProps {
 export const WorkflowNodeDetail = React.memo(function WorkflowNodeDetail({
   selectedNodeId,
   selectedWorkflow,
-  resultsLength,
+  resultsLength: _resultsLength,
   onClose,
   updateWorkflowRequestInputValue,
 }: WorkflowNodeDetailProps) {

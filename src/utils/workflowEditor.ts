@@ -38,6 +38,21 @@ interface ViewportOptions {
   topInset?: number;
 }
 
+export interface WorkflowRunLogLevel {
+  level: number;
+  requestIds: string[];
+}
+
+export interface WorkflowRunLogLayout {
+  levelByRequestId: Record<string, number>;
+  upstreamByRequestId: Record<string, string[]>;
+  downstreamByRequestId: Record<string, string[]>;
+  rootRequestIds: string[];
+  leafRequestIds: string[];
+  branchPaths: string[][];
+  levels: WorkflowRunLogLevel[];
+}
+
 const REFERENCE_PATTERN = /^\{\{([^.\s]+)\.([^}]+)\}\}$/;
 const SENSITIVE_HEADER_NAMES = new Set([
   'authorization',
@@ -329,8 +344,6 @@ export const buildWorkflowExplanation = (workflow: Workflow): WorkflowExplanatio
   };
 };
 
-const snapPosition = (value: number, size: number) => Math.round(value / size) * size;
-
 export const autoLayoutWorkflowNodes = (
   workflow: Workflow,
   options: AutoLayoutOptions
@@ -386,8 +399,8 @@ export const autoLayoutWorkflowNodes = (
 
       requestIds.forEach((requestId, index) => {
         positions[requestId] = {
-          x: startX + index * (nodeWidth + horizontalGap),
-          y,
+          x: Math.round((startX + index * (nodeWidth + horizontalGap)) / snapSize) * snapSize,
+          y: Math.round(y / snapSize) * snapSize,
         };
       });
     });
@@ -406,8 +419,8 @@ export const autoLayoutWorkflowNodes = (
       const column = index % columns;
       const row = Math.floor(index / columns);
       positions[requestId] = {
-        x: gridStartX + column * (nodeWidth + horizontalGap),
-        y: disconnectedStartY + row * (nodeHeight + verticalGap),
+        x: Math.round((gridStartX + column * (nodeWidth + horizontalGap)) / snapSize) * snapSize,
+        y: Math.round((disconnectedStartY + row * (nodeHeight + verticalGap)) / snapSize) * snapSize,
       };
     });
   }
@@ -502,8 +515,185 @@ export const getDefaultRunLogNodeId = (log: WorkflowRunLog | null) => {
   if (!log || log.nodes.length === 0) {
     return null;
   }
-  return log.nodes.find((node) => node.status === 'error')?.requestId || log.nodes[0].requestId;
+  const nodeMap = getRunLogNodeMap(log.nodes);
+  const rootNode = log.nodes.find((node) =>
+    (node.upstreamRequestIds || []).filter((requestId) => nodeMap.has(requestId)).length === 0
+  );
+  return (
+    log.nodes.find((node) => node.status === 'error')?.requestId
+    || rootNode?.requestId
+    || log.nodes[0].requestId
+  );
 };
 
 export const getRunLogNodeMap = (nodes: WorkflowRunNodeLog[]) =>
   new Map(nodes.map((node) => [node.requestId, node]));
+
+const sortRunLogRequestIds = (
+  requestIds: Iterable<string>,
+  requestOrderMap: Map<string, number>
+) => uniqueIds(Array.from(requestIds).filter((requestId) => requestOrderMap.has(requestId))).sort(
+  (left, right) => (requestOrderMap.get(left) ?? 0) - (requestOrderMap.get(right) ?? 0)
+);
+
+export const buildRunLogLayout = (log: WorkflowRunLog | null): WorkflowRunLogLayout => {
+  if (!log || log.nodes.length === 0) {
+    return {
+      levelByRequestId: {},
+      upstreamByRequestId: {},
+      downstreamByRequestId: {},
+      rootRequestIds: [],
+      leafRequestIds: [],
+      branchPaths: [],
+      levels: [],
+    };
+  }
+
+  const requestOrderMap = new Map(log.nodes.map((node, index) => [node.requestId, index]));
+  const upstreamSets = new Map(log.nodes.map((node) => [node.requestId, new Set<string>()]));
+  const downstreamSets = new Map(log.nodes.map((node) => [node.requestId, new Set<string>()]));
+
+  log.nodes.forEach((node) => {
+    const upstreamIds = sortRunLogRequestIds(node.upstreamRequestIds || [], requestOrderMap);
+    const downstreamIds = sortRunLogRequestIds(node.downstreamRequestIds || [], requestOrderMap);
+
+    upstreamIds.forEach((parentId) => {
+      upstreamSets.get(node.requestId)?.add(parentId);
+      downstreamSets.get(parentId)?.add(node.requestId);
+    });
+
+    downstreamIds.forEach((childId) => {
+      downstreamSets.get(node.requestId)?.add(childId);
+      upstreamSets.get(childId)?.add(node.requestId);
+    });
+  });
+
+  const upstreamByRequestId = Object.fromEntries(
+    log.nodes.map((node) => [
+      node.requestId,
+      sortRunLogRequestIds(upstreamSets.get(node.requestId) || [], requestOrderMap),
+    ])
+  );
+
+  const downstreamByRequestId = Object.fromEntries(
+    log.nodes.map((node) => [
+      node.requestId,
+      sortRunLogRequestIds(downstreamSets.get(node.requestId) || [], requestOrderMap),
+    ])
+  );
+
+  const rootRequestIds = log.nodes
+    .map((node) => node.requestId)
+    .filter((requestId) => (upstreamByRequestId[requestId] || []).length === 0);
+  const safeRootRequestIds = rootRequestIds.length > 0 ? rootRequestIds : [log.nodes[0].requestId];
+
+  const indegree = new Map(
+    log.nodes.map((node) => [node.requestId, (upstreamByRequestId[node.requestId] || []).length])
+  );
+  const levelByRequestId: Record<string, number> = {};
+  const orderedRequestIds: string[] = [];
+  const visited = new Set<string>();
+  const readyQueue = [...safeRootRequestIds];
+
+  readyQueue.sort((left, right) => (requestOrderMap.get(left) ?? 0) - (requestOrderMap.get(right) ?? 0));
+
+  while (readyQueue.length > 0) {
+    const currentId = readyQueue.shift();
+    if (!currentId || visited.has(currentId)) {
+      continue;
+    }
+
+    visited.add(currentId);
+    orderedRequestIds.push(currentId);
+
+    const parentLevel = Math.max(
+      0,
+      ...(upstreamByRequestId[currentId] || []).map((parentId) => levelByRequestId[parentId] || 0)
+    );
+    levelByRequestId[currentId] = Math.max(1, parentLevel + 1);
+
+    (downstreamByRequestId[currentId] || []).forEach((childId) => {
+      const nextIndegree = Math.max(0, (indegree.get(childId) || 0) - 1);
+      indegree.set(childId, nextIndegree);
+      if (nextIndegree === 0) {
+        readyQueue.push(childId);
+        readyQueue.sort((left, right) => (requestOrderMap.get(left) ?? 0) - (requestOrderMap.get(right) ?? 0));
+      }
+    });
+  }
+
+  log.nodes
+    .map((node) => node.requestId)
+    .filter((requestId) => !visited.has(requestId))
+    .sort((left, right) => (requestOrderMap.get(left) ?? 0) - (requestOrderMap.get(right) ?? 0))
+    .forEach((requestId) => {
+      const parentLevel = Math.max(
+        0,
+        ...(upstreamByRequestId[requestId] || []).map((parentId) => levelByRequestId[parentId] || 0)
+      );
+      levelByRequestId[requestId] = Math.max(1, parentLevel + 1);
+      orderedRequestIds.push(requestId);
+      visited.add(requestId);
+    });
+
+  const levelMap = new Map<number, string[]>();
+  orderedRequestIds.forEach((requestId) => {
+    const level = levelByRequestId[requestId] || 1;
+    const bucket = levelMap.get(level) || [];
+    bucket.push(requestId);
+    levelMap.set(level, bucket);
+  });
+
+  const levels = Array.from(levelMap.entries())
+    .sort(([leftLevel], [rightLevel]) => leftLevel - rightLevel)
+    .map(([level, requestIds]) => ({ level, requestIds }));
+
+  const leafRequestIds = orderedRequestIds.filter(
+    (requestId) => (downstreamByRequestId[requestId] || []).length === 0
+  );
+
+  const branchPaths: string[][] = [];
+  const pathKeys = new Set<string>();
+
+  const appendBranchPath = (path: string[]) => {
+    const key = path.join('>');
+    if (!pathKeys.has(key) && path.length > 0) {
+      pathKeys.add(key);
+      branchPaths.push(path);
+    }
+  };
+
+  const walkBranch = (requestId: string, path: string[], pathSet: Set<string>) => {
+    if (pathSet.has(requestId)) {
+      appendBranchPath([...path, requestId]);
+      return;
+    }
+
+    const nextPath = [...path, requestId];
+    const children = downstreamByRequestId[requestId] || [];
+    if (children.length === 0) {
+      appendBranchPath(nextPath);
+      return;
+    }
+
+    const nextPathSet = new Set(pathSet);
+    nextPathSet.add(requestId);
+    children.forEach((childId) => walkBranch(childId, nextPath, nextPathSet));
+  };
+
+  safeRootRequestIds.forEach((requestId) => walkBranch(requestId, [], new Set<string>()));
+
+  if (branchPaths.length === 0) {
+    appendBranchPath(orderedRequestIds);
+  }
+
+  return {
+    levelByRequestId,
+    upstreamByRequestId,
+    downstreamByRequestId,
+    rootRequestIds: safeRootRequestIds,
+    leafRequestIds,
+    branchPaths,
+    levels,
+  };
+};

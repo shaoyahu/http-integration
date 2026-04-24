@@ -1,7 +1,7 @@
 import React from 'react'
 import Editor from '@monaco-editor/react'
 import type { HttpRequest } from '../../store/requestStore'
-import { formatResponseData, parseResponseData } from '../../utils/response'
+import { formatResponseData } from '../../utils/response'
 
 type Props = {
   response: any

@@ -1,10 +1,12 @@
 import React, { useEffect } from 'react';
 import { Form, Input, Select, Button, Drawer, Popconfirm, Row, Col, Card, Tabs, message } from 'antd';
 import { PlusOutlined, DeleteOutlined, InfoCircleOutlined } from '@ant-design/icons';
+import axios from 'axios';
 import { useRequestStore, type ParamField, type OutputField, type ApiMapping } from '../store/requestStore';
 import Editor from '@monaco-editor/react';
 import { applyPathMapping, parseBodyValue, setNestedValue } from '../utils/requestPayload';
 import { formatResponseData, parseResponseData } from '../utils/response';
+import { proxyRequest } from '../api/http';
 import RequestBasicInfo from './request/RequestBasicInfo';
 import RequestParameters from './request/RequestParameters';
 import RequestMappings from './request/RequestMappings';
@@ -237,13 +239,20 @@ export const RequestEditor = React.memo(function RequestEditor(): JSX.Element {
     let url = selectedRequest?.url || '';
 
     let bodyObject: Record<string, unknown> = {};
-    if (selectedRequest?.body && selectedRequest.body.trim() !== '') {
+    let hasStructuredBody = false;
+    const rawBodyText = selectedRequest?.body?.trim() || '';
+    if (rawBodyText !== '') {
       try {
-        bodyObject = JSON.parse(selectedRequest.body);
+        const parsedBody = JSON.parse(rawBodyText);
+        if (parsedBody && typeof parsedBody === 'object' && !Array.isArray(parsedBody)) {
+          bodyObject = parsedBody;
+          hasStructuredBody = true;
+        }
       } catch { /* ignore */ }
     }
 
     const mappings = selectedRequest?.apiMappings || [];
+    let bodyUpdated = false;
     for (const mapping of mappings) {
       if (!mapping.inputName || !mapping.key) continue;
       const value = inputValueMap[mapping.inputName];
@@ -253,13 +262,22 @@ export const RequestEditor = React.memo(function RequestEditor(): JSX.Element {
       } else if (mapping.target === 'params') {
         params[mapping.key] = value;
       } else if (mapping.target === 'body') {
+        if (!hasStructuredBody && rawBodyText !== '') {
+          throw new Error('Body 必须是 JSON 对象后才能映射字段');
+        }
         setNestedValue(bodyObject, mapping.key, parseBodyValue(value));
+        hasStructuredBody = true;
+        bodyUpdated = true;
       }
     }
 
-    let body = undefined;
-    if (selectedRequest && ['POST', 'PUT', 'PATCH'].includes(selectedRequest.method) && Object.keys(bodyObject).length > 0) {
-      body = bodyObject;
+    let body: unknown = undefined;
+    if (selectedRequest && ['POST', 'PUT', 'PATCH'].includes(selectedRequest.method)) {
+      if (bodyUpdated || hasStructuredBody) {
+        body = bodyObject;
+      } else if (rawBodyText !== '') {
+        body = rawBodyText;
+      }
     }
 
     return { url, headers, params, body };
@@ -355,16 +373,22 @@ export const RequestEditor = React.memo(function RequestEditor(): JSX.Element {
       if (typeof error === 'object' && error !== null && 'errorFields' in error) {
         return;
       }
-      const axiosError = error as { response?: { data?: unknown; status?: number }; message?: string };
-      const errorData = axiosError.response?.data || axiosError.message || '请求失败';
+      const axiosResponse = axios.isAxiosError(error) ? error.response : undefined;
+      const errorData = axiosResponse?.data
+        || (error instanceof Error ? error.message : '请求失败');
+      const backendMessage = typeof axiosResponse?.data === 'object'
+        && axiosResponse.data !== null
+        && 'message' in axiosResponse.data
+        ? String((axiosResponse.data as { message?: unknown }).message || '')
+        : '';
       setResponse({
-        status: error.response?.status || 500,
-        statusText: error.response?.statusText || 'Error',
+        status: axiosResponse?.status || 500,
+        statusText: axiosResponse?.statusText || 'Error',
         data: errorData,
-        headers: error.response?.headers || {},
+        headers: axiosResponse?.headers || {},
       });
       setActiveTestTab('results');
-      message.error(error.response?.data?.message || error.message || '请求失败');
+      message.error(backendMessage || (error instanceof Error ? error.message : '请求失败'));
     } finally {
       setTestLoading(false);
     }
@@ -494,6 +518,7 @@ export const RequestEditor = React.memo(function RequestEditor(): JSX.Element {
         onNameChange={(v) => updateRequest(selectedRequest!.id, { name: v })}
         onMethodChange={(v) => updateRequest(selectedRequest!.id, { method: v as typeof selectedRequest.method })}
         onUrlChange={(v) => updateRequest(selectedRequest!.id, { url: v })}
+        onStartEdit={handleStartEditBasicInfo}
         onImport={() => {}}
         onExport={() => {}}
       />
@@ -829,6 +854,7 @@ export const RequestEditor = React.memo(function RequestEditor(): JSX.Element {
             onNameChange={(v) => updateRequest(selectedRequest.id, { name: v })}
             onMethodChange={(v) => updateRequest(selectedRequest.id, { method: v as typeof selectedRequest.method })}
             onUrlChange={(v) => updateRequest(selectedRequest.id, { url: v })}
+            onStartEdit={handleStartEditBasicInfo}
             onImport={() => {}}
             onExport={() => {}}
           />

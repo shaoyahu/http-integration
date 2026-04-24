@@ -1,8 +1,6 @@
 import React from 'react'
 import { Row, Col, Input, Button, Select } from 'antd'
-import type { HttpRequest, ParamField, OutputField } from '../../store/requestStore'
-
-const { Option } = Select;
+import type { HttpRequest } from '../../store/requestStore'
 
 type Props = {
   request: HttpRequest

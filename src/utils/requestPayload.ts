@@ -17,15 +17,16 @@ export const setNestedValue = <T extends Record<string, unknown>>(
 ): void => {
   const segments = path.split('.').filter(Boolean);
   if (segments.length === 0) return;
-  let cursor: unknown = target;
+  let cursor: Record<string, unknown> = target;
   for (let i = 0; i < segments.length - 1; i += 1) {
     const key = segments[i];
-    if (!cursor || typeof cursor !== 'object') {
-      (cursor as Record<string, unknown>)[key] = {};
+    const nextValue = cursor[key];
+    if (!nextValue || typeof nextValue !== 'object') {
+      cursor[key] = {};
     }
-    cursor = (cursor as Record<string, unknown>)[key];
+    cursor = cursor[key] as Record<string, unknown>;
   }
-  (cursor as Record<string, unknown>)[segments[segments.length - 1]] = value;
+  cursor[segments[segments.length - 1]] = value;
 };
 
 export const parseBodyValue = (value: unknown): unknown => {

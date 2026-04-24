@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { useRequestStore, DEFAULT_REQUEST_ID, HttpRequest } from './requestStore';
+import { useRequestStore, DEFAULT_REQUEST_ID } from './requestStore';
+import type { HttpRequest } from './requestStore';
 
 describe('RequestStore', () => {
   beforeEach(() => {

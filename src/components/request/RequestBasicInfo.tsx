@@ -2,8 +2,6 @@ import React from 'react'
 import { Input, Button, Select } from 'antd'
 import type { HttpRequest } from '../../store/requestStore'
 
-const { Option } = Select;
-
 type Props = {
   request: HttpRequest
   isEditing: boolean
@@ -19,7 +17,7 @@ type Props = {
   onIconUrlChange?: (v: string) => void
   onMethodChange: (v: string) => void
   onUrlChange: (v: string) => void
-  onStartEdit: () => void
+  onStartEdit?: () => void
   onCancelEdit?: () => void
   onSave?: () => void
   onImport?: () => void
@@ -46,6 +44,9 @@ const RequestBasicInfo: React.FC<Props> = React.memo((props) => {
       <div className="flex items-center justify-between">
         <div className="text-lg font-semibold text-gray-700">基本信息</div>
         <div className="flex items-center gap-2">
+          {!isEditing && props.onStartEdit ? (
+            <Button size="small" onClick={props.onStartEdit}>编辑</Button>
+          ) : null}
           <Button size="small" onClick={onImport}>导入</Button>
           <Button size="small" onClick={onExport}>导出</Button>
         </div>
@@ -53,11 +54,21 @@ const RequestBasicInfo: React.FC<Props> = React.memo((props) => {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <div>
           <div className="text-sm font-medium text-gray-700 mb-1">请求名称</div>
-          <Input value={name} onChange={(e) => onNameChange(e.target.value)} placeholder="请求名称" />
+          <Input
+            value={name}
+            onChange={(e) => onNameChange(e.target.value)}
+            placeholder="请求名称"
+            disabled={!isEditing}
+          />
         </div>
         <div>
           <div className="text-sm font-medium text-gray-700 mb-1">请求方法</div>
-          <Select value={draftMethod} style={{ width: 120 }} onChange={(v) => onMethodChange(v as string)}>
+          <Select
+            value={isEditing ? draftMethod : method}
+            style={{ width: 120 }}
+            onChange={(v) => onMethodChange(v as string)}
+            disabled={!isEditing}
+          >
             <Select.Option value="GET">GET</Select.Option>
             <Select.Option value="POST">POST</Select.Option>
             <Select.Option value="PUT">PUT</Select.Option>
@@ -67,7 +78,12 @@ const RequestBasicInfo: React.FC<Props> = React.memo((props) => {
         </div>
         <div>
           <div className="text-sm font-medium text-gray-700 mb-1">请求 URL</div>
-          <Input value={draftUrl} onChange={(e) => onUrlChange(e.target.value)} placeholder="https://api.example.com/resource" />
+          <Input
+            value={isEditing ? draftUrl : url}
+            onChange={(e) => onUrlChange(e.target.value)}
+            placeholder="https://api.example.com/resource"
+            disabled={!isEditing}
+          />
         </div>
       </div>
       <div className="text-sm text-gray-500">当前配置将用于发起请求与调试</div>
